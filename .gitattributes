@@ -1,0 +1,4 @@
+# Normalize line endings in the object store regardless of the contributor's core.autocrlf.
+# PROTOCOL.md has to stay byte-identical to the copy in the main OpenUtau repository, and
+# this is the same rule that governs it there.
+*          text=auto

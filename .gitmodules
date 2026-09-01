@@ -1,0 +1,12 @@
+[submodule "libs/clap"]
+	path = libs/clap
+	url = https://github.com/free-audio/clap.git
+[submodule "libs/clap-wrapper"]
+	path = libs/clap-wrapper
+	url = https://github.com/free-audio/clap-wrapper.git
+[submodule "libs/r8brain"]
+	path = libs/r8brain
+	url = https://github.com/avaneev/r8brain-free-src.git
+[submodule "libs/xxhash"]
+	path = libs/xxhash
+	url = https://github.com/Cyan4973/xxHash.git
