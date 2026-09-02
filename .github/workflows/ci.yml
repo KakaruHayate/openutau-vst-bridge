@@ -67,6 +67,25 @@ jobs:
         # ran on this platform never reaches the log.
         run: ctest --test-dir build --build-config Release --output-on-failure --verbose
 
+      - name: Validate the VST3
+        # Steinberg's own host, built from the SDK that clap-wrapper already fetched during
+        # configure. clap-wrapper's vst3_validator target shells out to a nested Ninja build, so
+        # the SDK is configured directly here instead — one generator, no second toolchain.
+        # It instantiates the plugin through the factory and drives initialize, setActive, state
+        # and process for real, including process on another thread.
+        shell: bash
+        run: |
+          cmake -S build/cpm/vst3sdk -B build/validator \
+                -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+                -DSMTG_ADD_VSTGUI=OFF -DSMTG_ENABLE_VSTGUI_SUPPORT=OFF \
+                -DSMTG_ENABLE_VST3_PLUGIN_EXAMPLES=OFF -DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=OFF
+          cmake --build build/validator --config Release --target validator
+          # The bundle is a directory, and clap-wrapper puts it under assets/VST3 only on Windows.
+          bundle=$(find build/assets -maxdepth 2 -type d -name '*.vst3' | head -1)
+          runner=$(find build/validator/bin -type f \( -name validator -o -name validator.exe \) | head -1)
+          echo "Validating $bundle with $runner"
+          "$runner" "$bundle"
+
       - name: Collect the built plugins
         if: always()
         uses: actions/upload-artifact@v4
