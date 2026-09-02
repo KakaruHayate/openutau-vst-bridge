@@ -1,12 +1,15 @@
 nlohmann/json single-header amalgamation
 =======================================
 
-file      json.hpp
+file      nlohmann/json.hpp
 version   v3.12.0
 commit    55f93686c01528224f448c19128836e7df245f72
 sha256    5f09d1eebe9b3557f21df155869af13bcde79b74a0748f82ca946e8cc088aaa0
 source    https://github.com/nlohmann/json, single_include/nlohmann/json.hpp
 license   MIT, see LICENSE.MIT beside this file
+
+Kept under a nlohmann/ subdirectory so the canonical `#include <nlohmann/json.hpp>` works
+with libs/json on the include path.
 
 Vendored rather than submoduled: upstream carries a very large test corpus and this
 build needs exactly one header. To update, take single_include/nlohmann/json.hpp from
