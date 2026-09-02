@@ -1,4 +1,14 @@
 cmake_minimum_required(VERSION 3.28)
+
+# Before project(), which is where CMake creates this cache entry. Left empty it is not
+# "undefined" either, so clap-wrapper's own default never fires and instead its prologue reads the
+# empty string as older than 10.15 and downloads gulrak/filesystem as a stub. 11.0 is also the
+# honest floor: std::filesystem in libc++ is annotated as introduced in macOS 10.15, and this
+# project's discovery layer is built on it.
+if (APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
+endif()
+
 project(openutau-vst-bridge VERSION 0.1.0 LANGUAGES C CXX)
 
 if (APPLE)
@@ -64,6 +74,12 @@ target_include_directories(${PROJECT_NAME}-impl
         ${CMAKE_CURRENT_SOURCE_DIR}/libs/r8brain
 )
 target_link_libraries(${PROJECT_NAME}-impl PUBLIC clap clap-wrapper-extensions)
+# std::thread, and r8brain calls pthread_mutex_* directly. Linux with glibc 2.34 or newer folds
+# libpthread into libc and links this anyway, which is exactly why it is easy to leave out and
+# find later on an older or musl toolchain. PUBLIC because the tests and the standalone host link
+# this library and start threads of their own.
+find_package(Threads REQUIRED)
+target_link_libraries(${PROJECT_NAME}-impl PUBLIC Threads::Threads)
 if (WIN32)
     # Winsock. PUBLIC because the tests link the implementation directly and open a real
     # loopback socket to exercise the framing end to end.
