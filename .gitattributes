@@ -2,3 +2,10 @@
 # PROTOCOL.md has to stay byte-identical to the copy in the main OpenUtau repository, and
 # this is the same rule that governs it there.
 *          text=auto
+
+# Pinned, because here a stray CR is a bug rather than a cosmetic difference: a workflow's
+# `run:` block with CRLF fails on a Linux runner with `$'\r': command not found`, which reads
+# like anything except a line-ending problem.
+*.yml      text eol=lf
+*.yaml     text eol=lf
+*.sh       text eol=lf

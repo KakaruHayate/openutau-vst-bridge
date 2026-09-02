@@ -1,0 +1,74 @@
+name: CI
+
+# Every platform on every push, because until now this code has only ever been compiled by MSVC
+# on Windows: the POSIX halves of the socket and discovery layers are written but unproven, and a
+# desk-check is not a compiler.
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push supersedes an older run on the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Never fail fast: the point of a first cross-platform run is to see all three verdicts,
+      # not the first one to break.
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-latest
+          - name: macOS arm64
+            os: macos-latest
+          - name: Linux x64
+            os: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # clap, clap-wrapper, r8brain and xxHash are submodules, and clap-wrapper carries its
+          # own vendored CPM for resolving the VST3 SDK.
+          submodules: recursive
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        # The VST3 SDK's base library pulls in X11 and friends even for a plugin with no editor.
+        # Ninja comes along because it is what clap-wrapper's own validator target shells out to.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build \
+            libx11-dev libxcb1-dev libxcb-util-dev libxcb-cursor-dev \
+            libxcb-keysyms1-dev libxcb-xkb-dev libxcb-shm0-dev \
+            libxcb-icccm4-dev libxcb-xinerama0-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig1-dev libfreetype6-dev libcairo2-dev \
+            libgtkmm-3.0-dev libsqlite3-dev
+
+      - name: Configure
+        # CMAKE_BUILD_TYPE for the single-config generators, --config below for the others.
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DBRIDGE_BUILD_HOST=ON
+
+      - name: Build
+        run: cmake --build build --config Release --target openutau-vst-bridge_all bridge-tests bridge-host
+
+      - name: Test
+        # The suite opens real loopback sockets and writes real discovery files, so a green run
+        # here means the protocol works on this platform rather than only that it compiled.
+        run: ctest --test-dir build --build-config Release --output-on-failure
+
+      - name: Collect the built plugins
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugins-${{ matrix.os }}
+          path: build/assets/**
+          if-no-files-found: warn
