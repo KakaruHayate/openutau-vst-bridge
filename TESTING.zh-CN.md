@@ -29,10 +29,16 @@
 
 **系统**：Windows 10/11（64 位）、macOS 11 或更新、主流 Linux 发行版都有对应文件。
 
-**从群文件 / 网盘下载两个压缩包**：
+**从群文件 / 网盘下载**，按你的系统取两样东西：
 
-- `OpenUtau-0.0.1-Beta-<你的系统>.zip` —— 带 DAW 集成的测试版 OpenUtau
-- `OpenUtau-Bridge-<你的系统>.zip` —— 插件本体
+| 你的系统 | OpenUtau 测试版 | 插件 |
+|---|---|---|
+| Windows 64 位 | `OpenUtau-win-x64.zip` | `OpenUtau-Bridge-Windows` |
+| macOS（Apple 芯片，M1 及以后） | `OpenUtau-osx-arm64.dmg` | `OpenUtau-Bridge-macOS` |
+| macOS（Intel） | `OpenUtau-osx-x64.dmg` | `OpenUtau-Bridge-macOS` |
+| Linux 64 位 | `OpenUtau-linux-x64.tar.gz` | `OpenUtau-Bridge-Linux` |
+
+需要 Windows 32 位 / ARM64 版本的话说一声，有构建但没放上来。
 
 <!-- CHUNK2 -->
 
@@ -40,13 +46,17 @@
 
 ### 1. 测试版 OpenUtau
 
-解压到任意目录就行，**放在和你现有 OpenUtau 不同的文件夹**，比如 `D:\OpenUtau-DAW测试\`。里面的 `OpenUtau.exe` 就是入口。
+**Windows**：解压 `OpenUtau-win-x64.zip` 到任意目录，**放在和你现有 OpenUtau 不同的文件夹**，比如 `D:\OpenUtau-DAW测试\`。里面的 `OpenUtau.exe` 就是入口。这是免安装的绿色版，不会动你现有的安装。
+
+**macOS**：打开 `.dmg`，把 OpenUtau 拖到「应用程序」。首次打开若提示无法验证开发者，右键 → 打开。
+
+**Linux**：解压 `tar.gz`，运行里面的 `OpenUtau`。
 
 它和你平时那份是完全独立的两份程序。音源、设置这些是共用的，所以你的音源不用重新装。
 
 ### 2. 插件
 
-**Windows** —— 压缩包里有两个东西，`OpenUtau Bridge.vst3`（一个**文件夹**）和 `OpenUtau Bridge.clap`（一个文件）。装哪个都行，两个都装也行：
+**Windows** —— `OpenUtau-Bridge-Windows` 文件夹里有两个东西，`OpenUtau Bridge.vst3`（一个**文件夹**）和 `OpenUtau Bridge.clap`（一个文件）。装哪个都行，两个都装也行：
 
 - VST3：把 `OpenUtau Bridge.vst3` **整个文件夹**复制到
   `C:\Program Files\Common Files\VST3\`
