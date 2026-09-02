@@ -65,16 +65,106 @@ cmake --build build --config Release --target openutau-vst-bridge_all
 Artifacts land in `build/assets/`. The first configure clones the VST3 SDK, so it needs
 network access.
 
+On Windows, `bridge-install` copies both formats into the per-user plug-in folders under
+`%LOCALAPPDATA%\Programs\Common`, which every host scans and which needs no administrator
+rights:
+
+```sh
+cmake --build build --config Release --target bridge-install
+```
+
+The VST3 is built as a bundle folder (`OpenUtau Bridge.vst3/Contents/x86_64-win/`) rather than a
+bare DLL. Both load in most hosts, but only the folder is what the current VST3 spec describes.
+
 ## Layout
 
 ```
 src/
-  bridge_entry.h    the three symbols a format module needs
-  bridge_entry.cpp  the exported clap_entry, one per module
-  plugin.cpp        descriptor, factory, and the CLAP implementation
+  bridge_entry.*    the three symbols a format module needs, and the exported clap_entry
+  plugin.cpp        descriptor, factory, parameters, state, and the CLAP process callback
+  transport.h       where a block sits on the host's timeline
+  session.*         the worker thread that owns the connection and publishes snapshots
+  socket.* stream.h the listener and the byte streams over it
+  reader.* frame.*  lines and data-plane frames off a stream
+  messages.*        control-plane JSON, both directions
+  connection.*      requests, responses, notifications, heartbeat
+  discovery.*       the advertisement file OpenUtau scans for
+  audio_store.*     hash to PCM, converted to the host's sample rate
+  timeline.*        the snapshot the audio thread mixes, and the handover to it
+  fader.h hash.*    OpenUtau's volume and pan law; XXH64 and its wire form
+tools/
+  bridge_host.cpp   runs a session outside a DAW, for checking against OpenUtau itself
 libs/               dependencies, all permissively licensed
 PROTOCOL.md         the wire contract, mirrored from the main repository
 ```
 
 `src/` builds into a static library that knows nothing about formats;
 `make_clapfirst_plugins` links it into one module per format.
+
+## Testing
+
+```sh
+cmake --build build --config Release --target bridge-tests
+./build/tests/Release/bridge-tests
+```
+
+The tests link that static library directly and open real loopback sockets, so the protocol is
+exercised end to end — discovery file, framing, store, snapshot and mixer — without loading a
+module into a host.
+
+### Checking against OpenUtau itself
+
+The suite here speaks to a fake OpenUtau and OpenUtau's own suite speaks to a fake plugin, which
+leaves one thing neither can catch: the two disagreeing. `bridge-host` closes that by running the
+real session outside a DAW.
+
+```sh
+cmake -B build -DBRIDGE_BUILD_HOST=ON
+cmake --build build --config Release --target bridge-host
+./build/Release/bridge-host --dir /tmp/bridge-live --rate 44100 --loop 4
+```
+
+Then, in the main repository, point the opt-in integration test at the same directory — it is
+skipped when the variable is unset, so it costs an ordinary run nothing:
+
+```sh
+OPENUTAU_BRIDGE_DISCOVERY='C:\Users\you\AppData\Local\Temp\bridge-live' \
+    dotnet test OpenUtau.Test/OpenUtau.Test.csproj --filter DawRealPluginTest
+```
+
+That drives the shipping `DawManager` — real discovery scan, real USTX serializer, real audio
+extraction — against this plugin, and the whole flow is visible in `bridge-host`'s output:
+
+```
+info: OpenUtau connected on port 50512.
+info: Project baseline received, 754 bytes.      <- init
+t=  1s  peak L 0.1768  R 0.1768                  <- updatePartLayout, getAudio, mixed
+t=  3s  peak L 0.0000  R 0.0000
+info: Project baseline received, 754 bytes.      <- playbackStarted, flushed back as updateUstx
+```
+
+The level is worth checking rather than glancing at: the test's part is a constant 0.25 on a track
+at unity and centre, and OpenUtau's pan law is constant-power, so 0.25 × 0.7071 = 0.1768 in each
+channel is what agreement looks like. At a host rate other than 44100 expect a few percent more at
+the part's edges — that is the resampler's overshoot on a rectangular window, not a gain error.
+
+Without `--loop`, the transport never restarts, so `playbackStarted` is never sent and that half of
+the flow goes unverified.
+
+### Steinberg's validator
+
+The VST3 side can be checked without a DAW at all. clap-wrapper's own `vst3_validator` target
+shells out to a nested Ninja build, so where Ninja is absent it is easier to build the SDK's
+validator directly:
+
+```sh
+cmake -S build/cpm/vst3sdk -B build/validator-vs -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+      -DSMTG_ADD_VSTGUI=OFF -DSMTG_ENABLE_VSTGUI_SUPPORT=OFF \
+      -DSMTG_ENABLE_VST3_PLUGIN_EXAMPLES=OFF -DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=OFF
+cmake --build build/validator-vs --config Release --target validator
+./build/validator-vs/bin/Release/validator.exe "build/assets/VST3/OpenUtau Bridge.vst3"
+```
+
+It instantiates the plugin through the factory and drives initialize, setActive, state and process
+for real, including a run of `process` on another thread — which is as close to a host as anything
+that is not one. Expect 47 passed, 0 failed.

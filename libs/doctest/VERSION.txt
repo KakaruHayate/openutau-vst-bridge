@@ -1,0 +1,14 @@
+doctest single-header test framework
+===================================
+
+file      doctest.h
+version   v2.4.11
+commit    ae7a13539fb71f270b87eb2e874fbac80bc8dda2
+sha256    28846c518fc824eb37354bba40fb9a6372d67f891562d243b663b76190dc6bd7
+source    https://github.com/doctest/doctest, doctest/doctest.h
+license   MIT, see LICENSE.txt beside this file
+
+Vendored for the same reason as json.hpp: one header is all the build needs, and the
+upstream repository is far larger than that. Tests only — nothing under src/ includes it.
+To update, take doctest/doctest.h from the desired tag and refresh the three identifiers
+above.
