@@ -1,5 +1,7 @@
 # openutau-vst-bridge
 
+[![CI](https://github.com/KakaruHayate/openutau-vst-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/KakaruHayate/openutau-vst-bridge/actions/workflows/ci.yml)
+
 A thin plugin that puts OpenUtau's rendered audio on the DAW timeline. Editing stays in
 the OpenUtau window; the plugin holds the connection, the audio, and the placement.
 
@@ -153,9 +155,9 @@ the flow goes unverified.
 
 ### Steinberg's validator
 
-The VST3 side can be checked without a DAW at all. clap-wrapper's own `vst3_validator` target
-shells out to a nested Ninja build, so where Ninja is absent it is easier to build the SDK's
-validator directly:
+CI runs this on all three platforms on every push, so what follows is only needed to reproduce a
+failure locally. clap-wrapper's own `vst3_validator` target shells out to a nested Ninja build, so
+where Ninja is absent it is easier to configure the SDK directly:
 
 ```sh
 cmake -S build/cpm/vst3sdk -B build/validator-vs -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
