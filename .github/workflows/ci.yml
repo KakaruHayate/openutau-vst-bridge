@@ -63,7 +63,9 @@ jobs:
       - name: Test
         # The suite opens real loopback sockets and writes real discovery files, so a green run
         # here means the protocol works on this platform rather than only that it compiled.
-        run: ctest --test-dir build --build-config Release --output-on-failure
+        # Verbose because ctest sees one test: without it, doctest's own count of what actually
+        # ran on this platform never reaches the log.
+        run: ctest --test-dir build --build-config Release --output-on-failure --verbose
 
       - name: Collect the built plugins
         if: always()

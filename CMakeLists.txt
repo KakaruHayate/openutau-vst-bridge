@@ -1,6 +1,15 @@
 cmake_minimum_required(VERSION 3.28)
 project(openutau-vst-bridge VERSION 0.1.0 LANGUAGES C CXX)
 
+if (APPLE)
+    # clap-wrapper's macOS path attaches Objective-C++ sources to the format modules, and those
+    # targets are created in this directory scope. A language enabled inside the wrapper's own
+    # subdirectory does not reach up here, so generating fails with a missing
+    # CMAKE_OBJCXX_COMPILE_OBJECT unless the languages are declared before it is added.
+    enable_language(OBJC)
+    enable_language(OBJCXX)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
