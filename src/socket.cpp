@@ -196,7 +196,9 @@ bool Listener::Start() {
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_port = 0;  // The OS picks; the discovery file publishes what it picked.
-    address.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
+    // Unqualified on purpose, here and below: macOS defines the byte-order conversions as
+    // macros, and `::` in front of what one expands to is not a name at all.
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     if (::bind(Native(handle), reinterpret_cast<const sockaddr *>(&address),
                sizeof(address)) != 0) {
         BRIDGE_ERROR("Could not bind a loopback port (error %d).", LastError());
@@ -220,7 +222,7 @@ bool Listener::Start() {
         return false;
     }
     handle_ = handle;
-    port_ = ::ntohs(bound.sin_port);
+    port_ = ntohs(bound.sin_port);
     return true;
 }
 
@@ -261,8 +263,8 @@ std::unique_ptr<SocketStream> ConnectLoopback(int port) {
     }
     sockaddr_in address{};
     address.sin_family = AF_INET;
-    address.sin_port = ::htons(static_cast<uint16_t>(port));
-    address.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(static_cast<uint16_t>(port));
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     // Blocking: the peer is on this machine with the port already listening, so this either
     // completes at once or fails at once.
     if (::connect(Native(handle), reinterpret_cast<const sockaddr *>(&address),
