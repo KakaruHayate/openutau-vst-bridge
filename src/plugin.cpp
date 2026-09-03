@@ -314,7 +314,8 @@ clap_process_status PluginProcess(const clap_plugin_t *plugin, const clap_proces
     int64_t fromFrame = 0;
     bool positioned = bridge::BlockStartFrame(process->transport, self->sampleRate, &fromFrame);
     self->session.NotePlaying(bridge::IsPlaying(process->transport));
-    if (!positioned || out.data32[0] == nullptr || out.data32[1] == nullptr) {
+    if (!positioned || !bridge::ShouldRender(process->transport, self->session.IsOffline()) ||
+        out.data32[0] == nullptr || out.data32[1] == nullptr) {
         ClearOutput(out, process->frames_count);
         return CLAP_PROCESS_CONTINUE;
     }

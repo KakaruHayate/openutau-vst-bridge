@@ -84,6 +84,9 @@ public:
         hopeless_.store(false);  // A new pass deserves a fresh chance to wait.
     }
 
+    /// Audio thread. Offline blocks are filled even when the host does not report itself playing.
+    bool IsOffline() const { return offline_.load(); }
+
     /// True when every part the layout names has its audio, converted and placed. This is what a
     /// bounce waits for, and the honest answer to "is what I would render now complete".
     bool IsSynced() const { return synced_.load(); }

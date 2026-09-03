@@ -52,4 +52,13 @@ inline bool BlockStartFrame(const clap_event_transport_t *transport, double samp
     return true;
 }
 
+/// Whether a block should be filled at all. A stopped transport has nothing to play: a host keeps
+/// calling process while it is parked, always reporting the same position, so rendering then would
+/// emit one block of the timeline over and over — heard as a buzz rather than as the note it came
+/// from. Offline is exempt because a bounce is not obliged to report itself as playing.
+inline bool ShouldRender(const clap_event_transport_t *transport, bool offline) {
+    // A null transport has no absolute position, even during an offline pass.
+    return transport != nullptr && (offline || IsPlaying(transport));
+}
+
 }  // namespace bridge

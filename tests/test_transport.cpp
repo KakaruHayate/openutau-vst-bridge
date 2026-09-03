@@ -8,6 +8,7 @@
 using bridge::BlockSeconds;
 using bridge::BlockStartFrame;
 using bridge::IsPlaying;
+using bridge::ShouldRender;
 
 namespace {
 
@@ -32,6 +33,24 @@ clap_beattime BeatTime(double beats) {
 
 }  // namespace
 
+TEST_CASE("Playing and offline mode are the only states that may render") {
+    clap_event_transport_t playing =
+        Transport(CLAP_TRANSPORT_HAS_SECONDS_TIMELINE | CLAP_TRANSPORT_IS_PLAYING);
+    clap_event_transport_t stopped = Transport(CLAP_TRANSPORT_HAS_SECONDS_TIMELINE);
+
+    CHECK(ShouldRender(&playing, false));
+    CHECK_FALSE(ShouldRender(&stopped, false));
+    // Moving a stopped selection does not turn it into playback.
+    stopped.song_pos_seconds = SecTime(3.0);
+    CHECK_FALSE(ShouldRender(&stopped, false));
+    CHECK_FALSE(ShouldRender(nullptr, false));
+    CHECK(ShouldRender(&playing, true));
+    CHECK(ShouldRender(&stopped, true));
+    CHECK_FALSE(ShouldRender(nullptr, true));
+    // Offline mode is an explicit exception, not a permanent permission: returning to realtime
+    // while parked must become silent again.
+    CHECK_FALSE(ShouldRender(&stopped, false));
+}
 TEST_CASE("A seconds timeline is the position, converted to frames at the host's rate") {
     clap_event_transport_t transport = Transport(CLAP_TRANSPORT_HAS_SECONDS_TIMELINE);
     transport.song_pos_seconds = SecTime(2.5);
