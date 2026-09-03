@@ -70,8 +70,8 @@ public:
     /// every one of them and the worker re-pulls what the layout still names.
     void SetHostSampleRate(double rate) { hostRate_.store(rate); }
 
-    /// Which OpenUtau track this instance plays. Parts on any other track are not this
-    /// plugin's audio, and the track's fader is what its gain comes from.
+    /// Which OpenUtau track this instance routes. OpenUtau's volume/pan/mute fields remain on the
+    /// wire for compatibility, but the bridge emits pre-fader audio and the DAW owns those controls.
     void SetTrackNo(int trackNo) { trackNo_.store(trackNo); }
     int TrackNo() const { return trackNo_.load(); }
 

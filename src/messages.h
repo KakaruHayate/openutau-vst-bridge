@@ -33,7 +33,8 @@ struct PartLayout {
     std::string audioHash;
 };
 
-/// One entry of `updateTracks`, in OpenUtau's internal scale (§6.1).
+/// One entry of `updateTracks`, retained for wire compatibility. The bridge's default output is
+/// pre-fader, so these mixer values are informational here; the DAW owns gain, pan, mute and solo.
 struct TrackInfo {
     std::string name;
     /// Decibels; 0 is unity. Convert with the fader law in fader.h, not 10^(dB/20).

@@ -169,7 +169,9 @@ TEST_CASE("Parts overlapping on one track sum, as they do in OpenUtau's own mixd
     CHECK(block.left == std::vector<float>{1, 2, 3 + 1, 4 + 2, 3, 4});
 }
 
-TEST_CASE("Each channel gets its own gain") {
+TEST_CASE("Each channel gets its own gain in the generic mixer primitive") {
+    // This low-level test keeps arbitrary gains useful for future host-side routing; BuildTimeline
+    // policy below now supplies unity for the DAW-owned mixer.
     TimelinePtr timeline = Snapshot({Placed(Ramp(2), 0, 0.5f, 0.0f)});
     Block block(2);
     block.Mix(*timeline, 0);
@@ -194,7 +196,7 @@ TEST_CASE("A snapshot reports where its last part ends") {
     CHECK(Snapshot({Placed(Ramp(4), -10)})->Frames() == 0);
 }
 
-TEST_CASE("Building a snapshot resolves position, gain and track in one pass") {
+TEST_CASE("Building a snapshot resolves position and track in one pass") {
     AudioStore store;
     store.SetHostSampleRate(44100.0);  // The wire rate, so the samples stay exact.
     REQUIRE(store.Insert("mine", Wire({1.0f, 2.0f}, {3.0f, 4.0f})));
@@ -214,25 +216,45 @@ TEST_CASE("Building a snapshot resolves position, gain and track in one pass") {
     REQUIRE(timeline->parts.size() == 1);
     CHECK(timeline->parts[0].startFrame == 44100);  // 1000 ms.
     CHECK(timeline->parts[0].clip->left == std::vector<float>{1.0f, 2.0f});
-    // Panned hard left at unity: the fader's law, not a raw 10^(dB/20).
+    // Track mixing controls are intentionally not applied here: the DAW owns gain and pan.
     CHECK(timeline->parts[0].leftGain == doctest::Approx(1.0));
-    CHECK(timeline->parts[0].rightGain == doctest::Approx(0.0));
+    CHECK(timeline->parts[0].rightGain == doctest::Approx(1.0));
 }
 
-TEST_CASE("A centred track is the fader's -3 dB per channel, not unity") {
-    // OpenUtau pans by constant power, so the centre is not a special case that skips the law.
+TEST_CASE("A centred track remains unity because the DAW owns its mixer") {
     AudioStore store;
     store.SetHostSampleRate(44100.0);
-    REQUIRE(store.Insert("a", Wire({1.0f}, {1.0f})));
-    std::vector<TrackInfo> tracks = {Track(0.0, 0.0)};
+    REQUIRE(store.Insert("a", Wire({1.0f}, {2.0f})));
+    std::vector<TrackInfo> tracks = {Track(-18.0, 100.0, true)};
 
     TimelinePtr timeline =
         bridge::BuildTimeline({Layout(0, 0.0, 100.0, "a")}, tracks, store, 0, 44100.0);
     REQUIRE(timeline->parts.size() == 1);
-    CHECK(timeline->parts[0].leftGain == doctest::Approx(0.70711));
-    CHECK(timeline->parts[0].rightGain == doctest::Approx(0.70711));
+    CHECK(timeline->parts[0].leftGain == 1.0f);
+    CHECK(timeline->parts[0].rightGain == 1.0f);
+
+    Block block(1);
+    block.Mix(*timeline, 0);
+    CHECK(block.left == std::vector<float>{1.0f});
+    CHECK(block.right == std::vector<float>{2.0f});
 }
 
+TEST_CASE("Track volume, pan and mute do not alter pre-fader audio") {
+    AudioStore store;
+    store.SetHostSampleRate(44100.0);
+    REQUIRE(store.Insert("a", Wire({1.0f}, {2.0f})));
+    std::vector<PartLayout> layout = {Layout(0, 0.0, 100.0, "a")};
+
+    for (TrackInfo track : {Track(0.0, 0.0), Track(-24.0, -100.0, true),
+                            Track(12.0, 100.0, false)}) {
+        TimelinePtr timeline = bridge::BuildTimeline(layout, {track}, store, 0, 44100.0);
+        REQUIRE(timeline->parts.size() == 1);
+        Block block(1);
+        block.Mix(*timeline, 0);
+        CHECK(block.left == std::vector<float>{1.0f});
+        CHECK(block.right == std::vector<float>{2.0f});
+    }
+}
 TEST_CASE("A millisecond position rounds to the nearest frame, not towards zero") {
     AudioStore store;
     store.SetHostSampleRate(48000.0);
@@ -245,26 +267,29 @@ TEST_CASE("A millisecond position rounds to the nearest frame, not towards zero"
     CHECK(timeline->parts[0].startFrame == 34);  // 33.6 frames.
 }
 
-TEST_CASE("Everything inaudible is decided once, here, and not per block") {
+TEST_CASE("Missing audio is silent but track mixer controls are not applied") {
     AudioStore store;
     store.SetHostSampleRate(44100.0);
     REQUIRE(store.Insert("a", Wire({1.0f}, {1.0f})));
     REQUIRE(store.Insert("empty", {}));
     std::vector<PartLayout> layout = {Layout(0, 0.0, 100.0, "a")};
 
-    SUBCASE("a muted track") {
+    SUBCASE("a muted track still routes its dry part") {
         std::vector<TrackInfo> tracks = {Track(0.0, 0.0, true)};
-        CHECK(bridge::BuildTimeline(layout, tracks, store, 0, 44100.0)->parts.empty());
+        auto timeline = bridge::BuildTimeline(layout, tracks, store, 0, 44100.0);
+        REQUIRE(timeline->parts.size() == 1);
+        CHECK(timeline->parts[0].leftGain == 1.0f);
+        CHECK(timeline->parts[0].rightGain == 1.0f);
     }
-    SUBCASE("a track under the fader's floor") {
+    SUBCASE("a track under the former fader floor still routes its dry part") {
         std::vector<TrackInfo> tracks = {Track(-24.0, 0.0)};
-        CHECK(bridge::BuildTimeline(layout, tracks, store, 0, 44100.0)->parts.empty());
+        CHECK(bridge::BuildTimeline(layout, tracks, store, 0, 44100.0)->parts.size() == 1);
     }
     SUBCASE("a track the project does not have") {
         std::vector<TrackInfo> tracks = {Track(0.0, 0.0)};
         CHECK(bridge::BuildTimeline(layout, tracks, store, 1, 44100.0)->parts.empty());
         CHECK(bridge::BuildTimeline(layout, tracks, store, -1, 44100.0)->parts.empty());
-        // Before `updateTracks` arrives there is no volume to play at, so nothing plays.
+        // Before `updateTracks` arrives there is no track to route to.
         CHECK(bridge::BuildTimeline(layout, {}, store, 0, 44100.0)->parts.empty());
     }
     SUBCASE("no host rate yet") {
@@ -284,7 +309,7 @@ TEST_CASE("A snapshot keeps its audio alive after the store has dropped it") {
     AudioStore store;
     store.SetHostSampleRate(44100.0);
     REQUIRE(store.Insert("a", Wire({1.0f, 2.0f}, {1.0f, 2.0f})));
-    std::vector<TrackInfo> tracks = {Track(0.0, -100.0)};  // Hard left, so the gain is exactly 1.
+    std::vector<TrackInfo> tracks = {Track(0.0, -100.0)};  // Mixer settings do not alter dry audio.
     TimelinePtr timeline =
         bridge::BuildTimeline({Layout(0, 0.0, 100.0, "a")}, tracks, store, 0, 44100.0);
     REQUIRE(timeline->parts.size() == 1);

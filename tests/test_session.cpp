@@ -172,10 +172,10 @@ TEST_CASE("A session is found through its advertisement and plays what OpenUtau 
     REQUIRE(ack.kind == ControlKind::Response);
     CHECK(ack.uuid == "c-1");
 
-    // One track, hard left at unity: the mix is then the part's own samples on the left and
-    // nothing on the right, so a gain mistake cannot hide behind the pan law.
+    // The bridge sends the rendered part unchanged; the DAW owns gain and pan.
     REQUIRE(utau.Send(bridge::BuildNotificationLine(
-        kind::kUpdateTracks, R"({"tracks":[{"name":"Lead","volume":0,"pan":-100}]})")));
+        kind::kUpdateTracks,
+        R"({"tracks":[{"name":"Lead","volume":-24,"pan":100,"muted":true}]})")));
 
     REQUIRE(utau.Send(bridge::BuildRequestLine("c-2", kind::kUpdatePartLayout,
                                               R"({"parts":[)" + LayoutOf(0, 1000.0, hash) +
@@ -195,7 +195,7 @@ TEST_CASE("A session is found through its advertisement and plays what OpenUtau 
     REQUIRE(RenderUntil(session, 44100, &block,
                         [](const Block &out) { return out.left[0] != 0.0f; }));
     CHECK(block.left == left);
-    CHECK(block.right == std::vector<float>(4, 0.0f));
+    CHECK(block.right == right);
 
     Block elsewhere(4);
     elsewhere.Render(session, 0);
@@ -314,7 +314,7 @@ TEST_CASE("A host sample-rate change makes the session ask for every part again"
     REQUIRE(RenderUntil(session, 0, &atHostRate,
                         [](const Block &out) { return out.left[200] > 0.4f; }));
     CHECK(atHostRate.left[200] == doctest::Approx(0.5).epsilon(0.02));
-    CHECK(atHostRate.right[200] == doctest::Approx(0.0));  // Still panned hard left.
+    CHECK(atHostRate.right[200] == doctest::Approx(0.5).epsilon(0.02));
 
     session.Stop();
 }

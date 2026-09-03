@@ -2,9 +2,12 @@
 
 /*
  * What the audio thread plays: parts placed at host-rate frame positions with their gains
- * already applied to them, and nothing else. Every decision that needs the layout, the track
- * list, the store or the fader is made once on the worker thread while building a snapshot,
- * so a block of audio costs one pointer load, a window intersection per part and a multiply-add.
+ * already applied to them, and nothing else. For bridge output, gains are unity: OpenUtau's
+ * track mixer is deliberately left to the DAW, so the dry signal entering DAW effects stays
+ * independent of editor volume, pan, mute and solo.
+ * Every decision that needs the layout, the track list or the store is made once on the worker
+ * thread while building a snapshot, so a block of audio costs one pointer load, a window
+ * intersection per part and a multiply-add.
  *
  * A snapshot is immutable once published. That is what makes the handover safe: the worker
  * never edits what the audio thread can see, it publishes a replacement and frees the old one
@@ -22,7 +25,9 @@
 
 namespace bridge {
 
-/// One part, resolved: where it starts in host frames, and the gain each channel gets.
+/// One part, resolved: where it starts in host frames. The gains remain explicit unity values so
+/// the mixer primitive can stay generic, but bridge policy deliberately leaves track gain and pan
+/// to the DAW.
 struct TimelinePart {
     /// Keeps the audio alive for as long as the snapshot is reachable, which is longer than
     /// the store holds it — a layout change must not pull audio out from under a running block.
@@ -51,9 +56,9 @@ struct Timeline {
 
 using TimelinePtr = std::shared_ptr<const Timeline>;
 
-/// Builds the snapshot for `trackNo`. Parts on other tracks, parts whose audio has not arrived
-/// and parts of a muted or fully attenuated track are all left out: the audio thread should
-/// never spend a block discovering that something is inaudible.
+/// Builds the snapshot for `trackNo`. Parts on other tracks and parts whose audio has not arrived
+/// are left out. Track volume, pan and effective mute are intentionally not applied: the DAW owns
+/// those controls for the pre-fader signal.
 TimelinePtr BuildTimeline(const std::vector<PartLayout> &parts,
                           const std::vector<TrackInfo> &tracks, const AudioStore &store,
                           int trackNo, double sampleRate);

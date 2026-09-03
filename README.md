@@ -140,15 +140,17 @@ extraction — against this plugin, and the whole flow is visible in `bridge-hos
 ```
 info: OpenUtau connected on port 50512.
 info: Project baseline received, 754 bytes.      <- init
-t=  1s  peak L 0.1768  R 0.1768                  <- updatePartLayout, getAudio, mixed
+t=  1s  peak L 0.25  R 0.25                  <- updatePartLayout, getAudio, mixed
 t=  3s  peak L 0.0000  R 0.0000
 info: Project baseline received, 754 bytes.      <- playbackStarted, flushed back as updateUstx
 ```
 
-The level is worth checking rather than glancing at: the test's part is a constant 0.25 on a track
-at unity and centre, and OpenUtau's pan law is constant-power, so 0.25 × 0.7071 = 0.1768 in each
-channel is what agreement looks like. At a host rate other than 44100 expect a few percent more at
-the part's edges — that is the resampler's overshoot on a rectangular window, not a gain error.
+The level is worth checking rather than glancing at: the bridge sends the rendered OpenUtau part at
+unity, and the DAW owns track gain, pan, mute and solo. A constant 0.25 part therefore reads 0.25
+in each channel before the DAW mixer. This is deliberate: changing an OpenUtau editor fader must
+not change the input level seen by a compressor or other DAW effect while the final mix is being
+tuned. At a host rate other than 44100 expect a few percent more at the part's edges — that is the
+resampler's overshoot on a rectangular window, not a gain error.
 
 Without `--loop`, the transport never restarts, so `playbackStarted` is never sent and that half of
 the flow goes unverified.

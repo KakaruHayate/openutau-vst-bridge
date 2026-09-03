@@ -1,7 +1,5 @@
 #include "timeline.h"
 
-#include "fader.h"
-
 #include <algorithm>
 #include <cmath>
 
@@ -22,18 +20,7 @@ TimelinePtr BuildTimeline(const std::vector<PartLayout> &parts,
     timeline->sampleRate = sampleRate;
     if (sampleRate <= 0.0 || trackNo < 0 || static_cast<size_t>(trackNo) >= tracks.size()) {
         // Silence, not unity gain: an instance whose track the project does not have — because
-        // it was deleted, or because `updateTracks` has not arrived yet — has no volume to play
-        // at, and guessing one would mean a burst at the wrong level for the fraction of a
-        // second before the real value lands.
-        return timeline;
-    }
-    const TrackInfo &track = tracks[static_cast<size_t>(trackNo)];
-    float leftGain = 0.0f;
-    float rightGain = 0.0f;
-    TrackGains(track.volume, track.pan, track.muted, &leftGain, &rightGain);
-    if (leftGain == 0.0f && rightGain == 0.0f) {
-        // Muted, or below the fader's -24 dB floor. Keeping the parts would cost a snapshot
-        // full of clips that multiply out to nothing.
+        // it was deleted, or because `updateTracks` has not arrived yet — has no track to route.
         return timeline;
     }
     for (const PartLayout &part : parts) {
@@ -49,8 +36,8 @@ TimelinePtr BuildTimeline(const std::vector<PartLayout> &parts,
         TimelinePart placed;
         placed.startFrame = static_cast<int64_t>(std::llround(part.startMs / 1000.0 * sampleRate));
         placed.clip = std::move(clip);
-        placed.leftGain = leftGain;
-        placed.rightGain = rightGain;
+        placed.leftGain = 1.0f;
+        placed.rightGain = 1.0f;
         timeline->parts.push_back(std::move(placed));
     }
     return timeline;
