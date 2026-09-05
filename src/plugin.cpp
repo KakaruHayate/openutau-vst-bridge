@@ -53,6 +53,7 @@ const clap_plugin_descriptor_t kDescriptor = {
 struct Bridge {
     clap_plugin_t plugin{};
     const clap_host_t *host = nullptr;
+    const clap_host_params_t *hostParams = nullptr;  // For the picker's flush nudge.
     double sampleRate = 0.0;
     bridge::Session session;
     bridge::InfoWindow *window = nullptr;  // Null where the platform has no gui backend.
@@ -162,9 +163,47 @@ void ApplyEvents(Bridge *self, const clap_input_events_t *in) {
     }
 }
 
+/// A track picked in the window has already changed the routing; this reports it to the
+/// host as a genuine parameter movement (gesture, value, gesture), so automation records
+/// it and the host's own controls follow. Queued wherever the host gives us an output
+/// queue - process or flush - and a request_flush from the picker's callback wakes a
+/// stopped host enough to run flush and collect it.
+void NotifyTrackRequest(Bridge *self, const clap_output_events_t *out) {
+    if (out == nullptr || !self->session.ConsumeTrackRequest()) {
+        return;
+    }
+    const double value = static_cast<double>(self->session.TrackNo());
+
+    clap_event_param_gesture_t begin{};
+    begin.header.size = sizeof(begin);
+    begin.header.time = 0;
+    begin.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+    begin.header.type = CLAP_EVENT_PARAM_GESTURE_BEGIN;
+    begin.param_id = kTrackParamId;
+    if (out->try_push(out, &begin.header)) {
+        clap_event_param_value_t event{};
+        event.header.size = sizeof(event);
+        event.header.time = 0;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_PARAM_VALUE;
+        event.param_id = kTrackParamId;
+        event.value = value;
+        out->try_push(out, &event.header);
+    }
+    clap_event_param_gesture_t end{};
+    end.header.size = sizeof(end);
+    end.header.time = 0;
+    end.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+    end.header.type = CLAP_EVENT_PARAM_GESTURE_END;
+    end.param_id = kTrackParamId;
+    out->try_push(out, &end.header);
+}
+
 void ParamsFlush(const clap_plugin_t *plugin, const clap_input_events_t *in,
-                 const clap_output_events_t *) {
-    ApplyEvents(Bridge::Of(plugin), in);
+                 const clap_output_events_t *out) {
+    Bridge *self = Bridge::Of(plugin);
+    ApplyEvents(self, in);
+    NotifyTrackRequest(self, out);
 }
 
 const clap_plugin_params_t kParams = {
@@ -264,8 +303,18 @@ bool PluginInit(const clap_plugin_t *plugin) {
     // cannot be bound is not fatal — the plugin still loads, and still passes audio through as
     // silence.
     Bridge *self = Bridge::Of(plugin);
+    if (self->host != nullptr) {
+        self->hostParams = static_cast<const clap_host_params_t *>(
+            self->host->get_extension(self->host, CLAP_EXT_PARAMS));
+    }
     self->session.Start();
-    self->window = bridge::CreateInfoWindow(&self->session);
+    // The picker's flush nudge: a stopped host learns of the new value when it next runs
+    // flush, which the request asks it to do soon.
+    self->window = bridge::CreateInfoWindow(&self->session, [self] {
+        if (self->hostParams != nullptr) {
+            self->hostParams->request_flush(self->host);
+        }
+    });
     bridge::GuiRegister(plugin, self->window);  // Null on platforms with no gui backend.
     return true;
 }
@@ -312,6 +361,7 @@ void ClearOutput(const clap_audio_buffer_t &out, uint32_t frames) {
 clap_process_status PluginProcess(const clap_plugin_t *plugin, const clap_process_t *process) {
     Bridge *self = Bridge::Of(plugin);
     ApplyEvents(self, process->in_events);
+    NotifyTrackRequest(self, process->out_events);
 
     if (process->audio_outputs_count == 0 || process->audio_outputs[0].data32 == nullptr ||
         process->audio_outputs[0].channel_count < 2) {

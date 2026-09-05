@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.28)
+cmake_minimum_required(VERSION 3.31)
 
 # Before project(), which is where CMake creates this cache entry. Left empty it is not
 # "undefined" either, so clap-wrapper's own default never fires and instead its prologue reads the
@@ -9,7 +9,7 @@ if (APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 endif()
 
-project(openutau-vst-bridge VERSION 0.1.0 LANGUAGES C CXX)
+project(openutau-vst-bridge VERSION 0.2.0 LANGUAGES C CXX)
 
 if (APPLE)
     # clap-wrapper's macOS path attaches Objective-C++ sources to the format modules, and those
@@ -84,10 +84,31 @@ if (WIN32)
     # Winsock. PUBLIC because the tests link the implementation directly and open a real
     # loopback socket to exercise the framing end to end.
     target_link_libraries(${PROJECT_NAME}-impl PUBLIC ws2_32)
-    # The info window. PRIVATE: nothing but the plugin loads a gui, and the tests must not
-    # need a window just to link the implementation.
-    target_sources(${PROJECT_NAME}-impl PRIVATE src/gui_win32.cpp)
-    target_link_libraries(${PROJECT_NAME}-impl PRIVATE user32 gdi32)
+endif()
+
+# The plugin window: a track picker plus the info rows. YUP (ISC, JUCE7-derived, Rive
+# renderer) draws it on every platform with one component tree; the stub backend stands
+# in when this is off, and then the plugin advertises no gui at all.
+option(BRIDGE_ENABLE_GUI "Build the plugin window on the YUP toolkit" ON)
+if (BRIDGE_ENABLE_GUI)
+    include(FetchContent)
+    # Pinned: YUP moves fast and its GUI APIs are still settling. Bump the pin together
+    # with any code that follows its API.
+    FetchContent_Declare(yup
+        GIT_REPOSITORY https://github.com/kunitoki/yup.git
+        GIT_TAG ff8ad8ee64d7f4cdea17436863b4eee39427d8d6)
+    # Off by default when fetched as a subproject; pinned explicitly so a future YUP
+    # default flip cannot silently turn our builds into its demo gallery.
+    set(YUP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(YUP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(YUP_BUILD_PLUGINS OFF CACHE BOOL "" FORCE)
+    set(YUP_BUILD_WHEEL OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(yup)
+
+    target_sources(${PROJECT_NAME}-impl PRIVATE src/gui_yup.cpp)
+    target_link_libraries(${PROJECT_NAME}-impl PRIVATE yup::yup_gui)
+else()
+    target_sources(${PROJECT_NAME}-impl PRIVATE src/gui_stub.cpp)
 endif()
 
 make_clapfirst_plugins(
