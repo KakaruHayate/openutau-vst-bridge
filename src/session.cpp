@@ -165,14 +165,11 @@ std::vector<std::string> Session::OnPartLayout(const std::vector<PartLayout> &pa
 }
 
 void Session::OnTracks(const std::vector<TrackInfo> &tracks) {
+    // Worker-owned copy for the timeline; a second copy under the UI mutex for the window.
     tracks_ = tracks;
     {
         std::lock_guard<std::mutex> lock(uiMutex_);
-        trackNames_.clear();
-        trackNames_.reserve(tracks.size());
-        for (const TrackInfo &track : tracks) {
-            trackNames_.push_back(track.name);
-        }
+        uiTracks_ = tracks;
     }
     dirty_ = true;
 }
@@ -310,7 +307,7 @@ UiState Session::UiCopy() const {
     std::lock_guard<std::mutex> lock(uiMutex_);
     state.projectName = projectName_;
     state.projectSaved = projectSaved_;
-    state.trackNames = trackNames_;
+    state.tracks = uiTracks_;
     return state;
 }
 

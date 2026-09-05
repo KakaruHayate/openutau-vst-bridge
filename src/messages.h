@@ -46,6 +46,10 @@ struct TrackInfo {
     double pan = 0.0;
     /// The effective mute, with solo already resolved against the rest of the project.
     bool muted = false;
+    /// v1.2: singer display name, empty when the track has none yet. Informational.
+    std::string singer;
+    /// v1.2: render engine key (CLASSIC, DIFFSINGER, ...), empty when unusable. Informational.
+    std::string engine;
 };
 
 /// An `updateProjectInfo` notification payload (v1.1): what an info window shows about the

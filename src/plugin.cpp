@@ -25,10 +25,10 @@ namespace {
 
 constexpr const char *kPluginId = "moe.kakaru.openutau-bridge";
 
-/// The OpenUtau track this instance plays. A parameter rather than a GUI control: the plugin has
-/// no window of its own, and every host can already show, automate and save a parameter.
+/// The OpenUtau track this instance plays. A parameter as well as a GUI control: every
+/// host can show, automate and save a parameter, and the plugin's own window writes the
+/// same value through it.
 constexpr clap_id kTrackParamId = 0;
-constexpr int kMaxTrackNo = 63;
 
 const char *const kFeatures[] = {
     CLAP_PLUGIN_FEATURE_INSTRUMENT,
@@ -40,7 +40,7 @@ const clap_plugin_descriptor_t kDescriptor = {
     CLAP_VERSION_INIT,
     kPluginId,
     "OpenUtau Bridge",
-    "KakaruHayate",
+    "OpenUTAU",
     "https://github.com/KakaruHayate/openutau-vst-bridge",
     "",  // manual_url
     "",  // support_url
@@ -53,7 +53,15 @@ const clap_plugin_descriptor_t kDescriptor = {
 struct Bridge {
     clap_plugin_t plugin{};
     const clap_host_t *host = nullptr;
+    const clap_host_params_t *hostParams = nullptr;  // For the picker's flush nudge.
     double sampleRate = 0.0;
+    /// The in-flight picker report: how many of gesture/value/gesture the host queue took,
+    /// and the value it is reporting. See NotifyTrackRequest.
+    int trackNotifyStage_ = 0;
+    double trackNotifyValue_ = 0.0;
+    /// Set when the host picked a track while a GUI report was mid-flight: the staged
+    /// value is stale, and only the matching gesture-end still owes the sequence.
+    bool trackNotifyCancel_ = false;
     bridge::Session session;
     bridge::InfoWindow *window = nullptr;  // Null where the platform has no gui backend.
 
@@ -63,7 +71,7 @@ struct Bridge {
 };
 
 int ClampTrack(double value) {
-    return std::clamp(static_cast<int>(std::lround(value)), 0, kMaxTrackNo);
+    return std::clamp(static_cast<int>(std::lround(value)), 0, bridge::kMaxTrackNo);
 }
 
 // ------------------------------------------------------------------ audio ports
@@ -102,7 +110,7 @@ bool ParamsGetInfo(const clap_plugin_t *, uint32_t index, clap_param_info_t *inf
     info->id = kTrackParamId;
     info->flags = CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_AUTOMATABLE;
     info->min_value = 0.0;
-    info->max_value = static_cast<double>(kMaxTrackNo);
+    info->max_value = static_cast<double>(bridge::kMaxTrackNo);
     info->default_value = 0.0;
     std::snprintf(info->name, sizeof(info->name), "OpenUtau Track");
     return true;
@@ -158,13 +166,87 @@ void ApplyEvents(Bridge *self, const clap_input_events_t *in) {
         const auto *event = reinterpret_cast<const clap_event_param_value_t *>(header);
         if (event->param_id == kTrackParamId) {
             self->session.SetTrackNo(ClampTrack(event->value));
+            // The host's own pick supersedes any GUI report still in flight: a staged
+            // value from before this event would overwrite the host's newer choice on
+            // the next queue visit. Drop it; only the closing gesture-end is owed.
+            if (self->trackNotifyStage_ != 0) {
+                self->trackNotifyStage_ = 0;
+                self->trackNotifyCancel_ = true;
+            }
         }
     }
 }
 
+/// A track picked in the window has already changed the routing; this reports it to the
+/// host as a genuine parameter movement (gesture, value, gesture), so automation records
+/// it and the host's own controls follow. Queued wherever the host gives us an output
+/// queue - process or flush - and a request_flush from the picker's callback wakes a
+/// stopped host enough to run flush and collect it.
+///
+/// The output queue is allowed to reject events, so the report is staged: the consumed
+/// value and how far the three-event sequence got live in the Bridge, and each call
+/// resumes where the last one stopped. The pending flag is only cleared once the queue
+/// took everything; a value picked mid-report simply re-reads at stage 0, so the newest
+/// choice is what the host sees. If the host picked a track itself mid-report, the staged
+/// value is discarded (see ApplyEvents) and a lone gesture-end closes the interrupted
+/// sequence before any new report may start.
+void NotifyTrackRequest(Bridge *self, const clap_output_events_t *out) {
+    if (out == nullptr) {
+        return;
+    }
+    if (self->trackNotifyCancel_) {
+        clap_event_param_gesture_t end{};
+        end.header.size = sizeof(end);
+        end.header.time = 0;
+        end.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        end.header.type = CLAP_EVENT_PARAM_GESTURE_END;
+        end.param_id = kTrackParamId;
+        if (out->try_push(out, &end.header)) {
+            self->trackNotifyCancel_ = false;
+        }
+        return;  // Cleared only once the end was taken; retried otherwise.
+    }
+    if (self->trackNotifyStage_ == 0) {
+        if (!self->session.ConsumeTrackRequest()) {
+            return;
+        }
+        self->trackNotifyValue_ = static_cast<double>(self->session.TrackNo());
+    }
+
+    while (self->trackNotifyStage_ < 3) {
+        bool accepted = false;
+        if (self->trackNotifyStage_ != 1) {
+            clap_event_param_gesture_t gesture{};
+            gesture.header.size = sizeof(gesture);
+            gesture.header.time = 0;
+            gesture.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+            gesture.header.type = self->trackNotifyStage_ == 0 ? CLAP_EVENT_PARAM_GESTURE_BEGIN
+                                                               : CLAP_EVENT_PARAM_GESTURE_END;
+            gesture.param_id = kTrackParamId;
+            accepted = out->try_push(out, &gesture.header);
+        } else {
+            clap_event_param_value_t value{};
+            value.header.size = sizeof(value);
+            value.header.time = 0;
+            value.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+            value.header.type = CLAP_EVENT_PARAM_VALUE;
+            value.param_id = kTrackParamId;
+            value.value = self->trackNotifyValue_;
+            accepted = out->try_push(out, &value.header);
+        }
+        if (!accepted) {
+            return;  // Queue full or not accepting; try again on the next block or flush.
+        }
+        self->trackNotifyStage_++;
+    }
+    self->trackNotifyStage_ = 0;
+}
+
 void ParamsFlush(const clap_plugin_t *plugin, const clap_input_events_t *in,
-                 const clap_output_events_t *) {
-    ApplyEvents(Bridge::Of(plugin), in);
+                 const clap_output_events_t *out) {
+    Bridge *self = Bridge::Of(plugin);
+    ApplyEvents(self, in);
+    NotifyTrackRequest(self, out);
 }
 
 const clap_plugin_params_t kParams = {
@@ -264,8 +346,18 @@ bool PluginInit(const clap_plugin_t *plugin) {
     // cannot be bound is not fatal — the plugin still loads, and still passes audio through as
     // silence.
     Bridge *self = Bridge::Of(plugin);
+    if (self->host != nullptr) {
+        self->hostParams = static_cast<const clap_host_params_t *>(
+            self->host->get_extension(self->host, CLAP_EXT_PARAMS));
+    }
     self->session.Start();
-    self->window = bridge::CreateInfoWindow(&self->session);
+    // The picker's flush nudge: a stopped host learns of the new value when it next runs
+    // flush, which the request asks it to do soon.
+    self->window = bridge::CreateInfoWindow(&self->session, [self] {
+        if (self->hostParams != nullptr) {
+            self->hostParams->request_flush(self->host);
+        }
+    });
     bridge::GuiRegister(plugin, self->window);  // Null on platforms with no gui backend.
     return true;
 }
@@ -312,6 +404,7 @@ void ClearOutput(const clap_audio_buffer_t &out, uint32_t frames) {
 clap_process_status PluginProcess(const clap_plugin_t *plugin, const clap_process_t *process) {
     Bridge *self = Bridge::Of(plugin);
     ApplyEvents(self, process->in_events);
+    NotifyTrackRequest(self, process->out_events);
 
     if (process->audio_outputs_count == 0 || process->audio_outputs[0].data32 == nullptr ||
         process->audio_outputs[0].channel_count < 2) {

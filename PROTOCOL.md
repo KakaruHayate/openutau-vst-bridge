@@ -72,7 +72,7 @@ One JSON file per plugin instance:
 {
   "port": 52341,
   "name": "OpenUtau Bridge (Track 1)",
-  "apiVersion": "1.1"
+  "apiVersion": "1.2"
 }
 ```
 
@@ -126,7 +126,7 @@ audio <hash> <length>\n
 #### `init` (request)
 
 - `request:<uuid>:init`, payload `{ "ustx": "<full USTX project document>" }`
-- Response `data`: `{ "apiVersion": "1.1" }`
+- Response `data`: `{ "apiVersion": "1.2" }`
 - Sent once at connect; the full project is the baseline. OpenUtau is the sole owner of the project, so the baseline only ever travels outward and is never echoed back.
 
 #### `updateUstx` (notification)
@@ -151,11 +151,12 @@ audio <hash> <length>\n
 #### `updateTracks` (notification)
 
 ```json
-{ "tracks": [ { "name": "Singer 1", "volume": 0.0, "pan": 0.0, "muted": false } ] }
+{ "tracks": [ { "name": "Singer 1", "volume": 0.0, "pan": 0.0, "muted": false, "singer": "Kikyo", "engine": "DIFFSINGER" } ] }
 ```
 
 - `volume`/`pan` are passed through in OpenUtau's internal scale, unconverted: `UTrack.Volume` is **decibels** (`0` = unity) and `UTrack.Pan` is **-100..+100** (`0` = centre).
 - `muted` is the **effective** mute: `UTrack.Muted`, which already has solo resolved against the rest of the project.
+- **v1.2:** `singer` and `engine` are informational fields for a plugin's GUI (track pickers, info windows). `singer` is the track singer's display name (`UTrack.Singer.Name`); `engine` is the render engine key (`UTrack.RendererSettings.renderer`, e.g. `CLASSIC`, `WORLDLINE-R`, `DIFFSINGER`, `ENUNU`, `VOGEN`, `VOICEVOX`). Either is the **empty string** when not applicable (no singer assigned yet / no usable renderer). Neither affects the audio; receivers that don't care may ignore them, and older plugins ignore them implicitly (§10).
 - These fields remain on the wire for compatibility and for peers that need the OpenUtau mixer state. The bridge's default output is **pre-fader**: it does not apply `volume`, `pan`, or `muted`. The DAW owns gain, pan, mute and solo so the dry signal entering its effects chain stays stable while the OpenUtau performance is edited.
 - Pre-fader output is scaled by a **constant output trim of √0.5 (≈ 0.7071, −3.01 dB) per channel**. OpenUtau pans constant-power, so its own playback of a centred track puts cos(π/4) on each channel; a bridge that bypassed panning without this trim would sit a systematic 3 dB above the level the performance was tuned against. The trim is not mixer state: it never follows `volume`, `pan` or `muted`.
 - A bridge may therefore receive a muted track and still request/render its part audio. `muted` is not a request to omit audio from the data plane.
@@ -254,6 +255,7 @@ disconnect (user)   → final update → "close" → teardown
 - **Kind namespaces.** Semantically changed kinds get suffixed, e.g. `updatePartLayoutV2`.
 - **Unknown fields** ignored by receivers.
 - `apiVersion` in discovery file + `init` response; major mismatch refuses connection.
+- **1.1 → 1.2:** `updateTracks` gained optional per-track `singer`/`engine` informational fields; nothing else changed, and 1.1 plugins interoperate unchanged.
 
 ## 11. Security & Trust Model
 

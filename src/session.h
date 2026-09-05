@@ -22,6 +22,7 @@
 #include "socket.h"
 #include "timeline.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
@@ -34,6 +35,11 @@
 
 namespace bridge {
 
+/// The highest track index the protocol and the plugin's parameter can express. The
+/// picker clamps against this too: OpenUtau may report more tracks than fit, and a
+/// request beyond it would report a parameter value outside the declared 0-63 range.
+constexpr int kMaxTrackNo = 63;
+
 /// What an info window shows about one instance. Copied out wholesale by `UiCopy()` on the
 /// main thread; the numbers come from atomics, the strings from a mutex-guarded block.
 struct UiState {
@@ -41,7 +47,9 @@ struct UiState {
     int port = 0;
     std::string projectName;
     bool projectSaved = false;
-    std::vector<std::string> trackNames;
+    /// v1.2: every track with its name and its singer/engine informational fields; the track
+    /// picker renders "N: name - singer / engine" out of these.
+    std::vector<TrackInfo> tracks;
     int trackNo = 0;
     bool hasTempo = false;
     double tempo = 0.0;
@@ -89,6 +97,19 @@ public:
     /// wire for compatibility, but the bridge emits pre-fader audio and the DAW owns those controls.
     void SetTrackNo(int trackNo) { trackNo_.store(trackNo); }
     int TrackNo() const { return trackNo_.load(); }
+
+    /// Main thread, from the track picker. Changes the routing immediately - the audio follows
+    /// on the next block - and records a pending request so the plugin can report the new value
+    /// to the host as a parameter change (CLAP: gesture + value + gesture on the output queue).
+    /// The pending flag is what keeps a host-side automation and a GUI click from echoing.
+    void RequestTrackNo(int trackNo) {
+        trackNo_.store(std::clamp(trackNo, 0, kMaxTrackNo));
+        trackRequestPending_.store(true);
+    }
+
+    /// Main thread, from the plugin's process/flush path. True exactly once per GUI change;
+    /// the plugin answers it by notifying the host for the parameter identified below.
+    bool ConsumeTrackRequest() { return trackRequestPending_.exchange(false); }
 
     /// Main thread. Whether the host is rendering faster than real time — a bounce, a freeze, an
     /// export. Audio arrives over a socket while the timeline is being played, which is fine at
@@ -177,6 +198,9 @@ private:
     TimelineBox timeline_;
     std::atomic<double> hostRate_{0.0};
     std::atomic<int> trackNo_{0};
+    /// Set by the track picker, consumed by the plugin's process/flush path so the change is
+    /// reported to the host as a parameter movement rather than silently applied.
+    std::atomic<bool> trackRequestPending_{false};
     /// Set by the audio thread on a rising play edge, cleared by the worker when it sends the
     /// notification. A flag rather than a queue: two starts one poll apart are one start.
     std::atomic<bool> playbackStarted_{false};
@@ -211,7 +235,7 @@ private:
     mutable std::mutex uiMutex_;
     std::string projectName_;
     bool projectSaved_ = false;
-    std::vector<std::string> trackNames_;
+    std::vector<TrackInfo> uiTracks_;
 };
 
 }  // namespace bridge
