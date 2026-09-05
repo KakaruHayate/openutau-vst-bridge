@@ -10,8 +10,28 @@ This is the plugin half of OpenUtau's DAW integration. The other half is the API
 the contract between them and is a verbatim copy of the file that ships there — **change
 one and you must change the other.**
 
-**Status: skeleton.** The build produces a loadable CLAP and VST3 that output silence. The
-bridge itself is not implemented yet.
+## What it does
+
+- **Project sync (v1.0).** Receives the USTX baseline and every debounced update, pulls
+  part audio by hash over the data plane, and places each part on the DAW timeline at its
+  absolute position — converted to the host's sample rate on arrival.
+- **Multi-instance, multi-track (v1.0).** One plugin instance per DAW track; a stepped
+  "OpenUtau Track" parameter chooses which track the instance answers for. All instances
+  share one OpenUtau connection per instance; each advertises itself through its own
+  discovery file.
+- **Pre-fader output (v1.0).** OpenUtau's volume/pan/mute fields stay on the wire but are
+  not applied: the DAW owns gain, pan, mute and solo, with a constant √0.5 trim so the
+  level matches OpenUtau's own centred-track playback.
+- **Bounce-friendly offline rendering (v1.0).** An offline (non-realtime) render waits
+  for missing part audio instead of printing holes; real-time playback never waits.
+- **Info window (v1.1).** A small window showing project name, saved state, connection
+  state, tempo, transport and the track list with this instance's track marked. Windows
+  for now; other platforms simply advertise no gui.
+- **Playhead sync (v1.1).** The DAW's transport position is sent one-way to OpenUtau —
+  immediately on state changes, every 100 ms while playing, and on scrubs of more than
+  50 ms while parked. OpenUtau's own playhead follows the DAW, never the reverse.
+- **Tempo guard (v1.1).** The DAW's tempo is reported when it changes; OpenUtau warns
+  once per distinct mismatch that bars will misalign (there is no tempo-map sync).
 
 ## Formats
 
@@ -83,7 +103,8 @@ bare DLL. Both load in most hosts, but only the folder is what the current VST3 
 ```
 src/
   bridge_entry.*    the three symbols a format module needs, and the exported clap_entry
-  plugin.cpp        descriptor, factory, parameters, state, and the CLAP process callback
+  plugin.cpp        descriptor, factory, parameters, state, gui hookup, and the CLAP process callback
+  gui.h gui_win32.cpp the info window: CLAP gui extension and its Win32 backend
   transport.h       where a block sits on the host's timeline
   session.*         the worker thread that owns the connection and publishes snapshots
   socket.* stream.h the listener and the byte streams over it

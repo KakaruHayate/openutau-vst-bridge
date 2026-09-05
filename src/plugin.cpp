@@ -4,10 +4,11 @@
  * translation between CLAP's vocabulary and that.
  *
  * Threads follow CLAP's own rules. init/destroy/activate and state are the main thread, process
- * is the audio thread, and the only things the audio thread does are Render() and NotePlaying().
+ * is the audio thread, and the only things the audio thread does are Render() and NoteTransport().
  */
 
 #include <clap/clap.h>
+#include <clap/ext/gui.h>
 
 #include <algorithm>
 #include <cmath>
@@ -16,6 +17,7 @@
 #include <cstring>
 
 #include "bridge_entry.h"
+#include "gui.h"
 #include "session.h"
 #include "transport.h"
 
@@ -42,7 +44,7 @@ const clap_plugin_descriptor_t kDescriptor = {
     "https://github.com/KakaruHayate/openutau-vst-bridge",
     "",  // manual_url
     "",  // support_url
-    "0.1.0",
+    "0.2.0",
     "Places audio rendered by OpenUtau onto the DAW timeline.",
     kFeatures,
 };
@@ -53,6 +55,7 @@ struct Bridge {
     const clap_host_t *host = nullptr;
     double sampleRate = 0.0;
     bridge::Session session;
+    bridge::InfoWindow *window = nullptr;  // Null where the platform has no gui backend.
 
     static Bridge *Of(const clap_plugin_t *plugin) {
         return static_cast<Bridge *>(plugin->plugin_data);
@@ -260,12 +263,18 @@ bool PluginInit(const clap_plugin_t *plugin) {
     // to an instance the user has only just added, before any audio runs through it. A port that
     // cannot be bound is not fatal — the plugin still loads, and still passes audio through as
     // silence.
-    Bridge::Of(plugin)->session.Start();
+    Bridge *self = Bridge::Of(plugin);
+    self->session.Start();
+    self->window = bridge::CreateInfoWindow(&self->session);
+    bridge::GuiRegister(plugin, self->window);  // Null on platforms with no gui backend.
     return true;
 }
 
 void PluginDestroy(const clap_plugin_t *plugin) {
-    delete Bridge::Of(plugin);  // Session's destructor stops the worker and unpublishes.
+    Bridge *self = Bridge::Of(plugin);
+    bridge::GuiUnregister(plugin);
+    delete self->window;
+    delete self;  // Session's destructor stops the worker and unpublishes.
 }
 
 bool PluginActivate(const clap_plugin_t *plugin, double sampleRate, uint32_t, uint32_t) {
@@ -285,11 +294,11 @@ bool PluginStartProcessing(const clap_plugin_t *) {
 
 void PluginStopProcessing(const clap_plugin_t *plugin) {
     // Clears the edge without reporting one, so resuming counts as a fresh start.
-    Bridge::Of(plugin)->session.NotePlaying(false);
+    Bridge::Of(plugin)->session.NoteTransport(false, 0.0, false, false, 0.0);
 }
 
 void PluginReset(const clap_plugin_t *plugin) {
-    Bridge::Of(plugin)->session.NotePlaying(false);
+    Bridge::Of(plugin)->session.NoteTransport(false, 0.0, false, false, 0.0);
 }
 
 void ClearOutput(const clap_audio_buffer_t &out, uint32_t frames) {
@@ -313,8 +322,15 @@ clap_process_status PluginProcess(const clap_plugin_t *plugin, const clap_proces
 
     int64_t fromFrame = 0;
     bool positioned = bridge::BlockStartFrame(process->transport, self->sampleRate, &fromFrame);
-    self->session.NotePlaying(bridge::IsPlaying(process->transport));
-    if (!positioned || !bridge::ShouldRender(process->transport, self->session.IsOffline()) ||
+    double seconds = 0.0;
+    bool hasPosition = bridge::BlockSeconds(process->transport, &seconds);
+    const clap_event_transport_t *transport = process->transport;
+    bool hasTempo = transport != nullptr && (transport->flags & CLAP_TRANSPORT_HAS_TEMPO) != 0;
+    // Reported every block, whatever the render decision: a parked transport is as much a
+    // playhead state as a moving one, and the worker decides what is worth sending.
+    self->session.NoteTransport(hasPosition, seconds, bridge::IsPlaying(transport), hasTempo,
+                                hasTempo ? transport->tempo : 0.0);
+    if (!positioned || !bridge::ShouldRender(transport, self->session.IsOffline()) ||
         out.data32[0] == nullptr || out.data32[1] == nullptr) {
         ClearOutput(out, process->frames_count);
         return CLAP_PROCESS_CONTINUE;
@@ -326,7 +342,7 @@ clap_process_status PluginProcess(const clap_plugin_t *plugin, const clap_proces
     return CLAP_PROCESS_CONTINUE;
 }
 
-const void *PluginGetExtension(const clap_plugin_t *, const char *id) {
+const void *PluginGetExtension(const clap_plugin_t *plugin, const char *id) {
     if (std::strcmp(id, CLAP_EXT_AUDIO_PORTS) == 0) {
         return &kAudioPorts;
     }
@@ -338,6 +354,10 @@ const void *PluginGetExtension(const clap_plugin_t *, const char *id) {
     }
     if (std::strcmp(id, CLAP_EXT_RENDER) == 0) {
         return &kRender;
+    }
+    if (std::strcmp(id, CLAP_EXT_GUI) == 0) {
+        Bridge *self = Bridge::Of(plugin);
+        return self->window != nullptr ? self->window->Extension() : nullptr;
     }
     return nullptr;
 }

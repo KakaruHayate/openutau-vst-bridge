@@ -136,6 +136,15 @@ void Connection::HandleNotification(const std::string &kindName, const std::stri
         handler_->OnTracks(tracks);
         return;
     }
+    if (kindName == kind::kUpdateProjectInfo) {
+        ProjectInfo info;
+        if (!ParseProjectInfoNotification(payload, &info)) {
+            BRIDGE_WARN("updateProjectInfo was malformed, ignored.");
+            return;
+        }
+        handler_->OnProjectInfo(info);
+        return;
+    }
     // Unknown notification kinds are logged and ignored, which is what append-only
     // versioning requires of an older peer (§5.1, §10).
     BRIDGE_INFO("Ignoring unknown notification '%s'.", kindName.c_str());

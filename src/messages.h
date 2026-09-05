@@ -20,8 +20,11 @@ inline constexpr const char *kUpdateUstx = "updateUstx";
 inline constexpr const char *kUpdatePartLayout = "updatePartLayout";
 inline constexpr const char *kGetAudio = "getAudio";
 inline constexpr const char *kUpdateTracks = "updateTracks";
+inline constexpr const char *kUpdateProjectInfo = "updateProjectInfo";
 inline constexpr const char *kPing = "ping";
 inline constexpr const char *kPlaybackStarted = "playbackStarted";
+inline constexpr const char *kPlayhead = "playhead";
+inline constexpr const char *kBpm = "bpm";
 }  // namespace kind
 
 /// One entry of `updatePartLayout`. Windows are absolute milliseconds on OpenUtau's
@@ -45,6 +48,14 @@ struct TrackInfo {
     bool muted = false;
 };
 
+/// An `updateProjectInfo` notification payload (v1.1): what an info window shows about the
+/// project. The name is the file stem; an unsaved project reports `saved` false and an empty
+/// name.
+struct ProjectInfo {
+    std::string name;
+    bool saved = false;
+};
+
 /// A `response:<uuid>` envelope, as read when a peer refuses one of our requests.
 struct Envelope {
     bool success = false;
@@ -55,6 +66,7 @@ struct Envelope {
 bool ParseUstxPayload(const std::string &json, std::string *ustx);
 bool ParsePartLayoutRequest(const std::string &json, std::vector<PartLayout> *parts);
 bool ParseTracksNotification(const std::string &json, std::vector<TrackInfo> *tracks);
+bool ParseProjectInfoNotification(const std::string &json, ProjectInfo *info);
 bool ParseEnvelope(const std::string &json, Envelope *envelope);
 
 /// Complete `{ "success": …, "data": …, "error": … }` envelopes, ready to send.
@@ -63,6 +75,13 @@ std::string BuildPartLayoutResponseEnvelope(const std::vector<std::string> &miss
 std::string BuildFailEnvelope(const std::string &error);
 
 std::string BuildGetAudioPayload(const std::string &hash);
+
+/// The DAW transport position, one-way towards OpenUtau (v1.1). `positionMs` is absolute
+/// milliseconds on the shared timeline — the same coordinate a part's `startMs` uses.
+std::string BuildPlayheadPayload(double positionMs, bool playing);
+
+/// The DAW project's tempo (v1.1).
+std::string BuildBpmPayload(double bpm);
 
 /// `{}` — the payload of the kinds that carry no fields.
 std::string BuildEmptyPayload();

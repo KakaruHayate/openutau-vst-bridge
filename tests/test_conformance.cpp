@@ -97,6 +97,29 @@ TEST_CASE("init, updatePartLayout, getAudio and playbackStarted over a real sock
     CHECK(started.kind == ControlKind::Notification);
     CHECK(started.name == kind::kPlaybackStarted);
 
+    // 4b. v1.1: project info flows in, playhead and bpm flow out (§6.1, §6.2).
+    REQUIRE(WriteLine(loop.client.get(),
+                      bridge::BuildNotificationLine(kind::kUpdateProjectInfo,
+                                                    R"({"name":"my song","saved":true})")));
+    REQUIRE(connection.Poll(kWaitMs));
+    REQUIRE(handler.projectInfos.size() == 1);
+    CHECK(handler.projectInfos[0].name == "my song");
+    CHECK(handler.projectInfos[0].saved);
+
+    REQUIRE(connection.SendNotification(kind::kPlayhead, bridge::BuildPlayheadPayload(2000.0, false)));
+    REQUIRE(connection.SendNotification(kind::kBpm, bridge::BuildBpmPayload(120.0)));
+    REQUIRE(client.ReadLine(&line, kWaitMs) == ReadStatus::Ok);
+    ControlLine playhead = bridge::ParseControlLine(line);
+    CHECK(playhead.kind == ControlKind::Notification);
+    CHECK(playhead.name == kind::kPlayhead);
+    CHECK(playhead.payload.find("\"positionMs\":2000") != std::string::npos);
+    CHECK(playhead.payload.find("\"playing\":false") != std::string::npos);
+    REQUIRE(client.ReadLine(&line, kWaitMs) == ReadStatus::Ok);
+    ControlLine bpm = bridge::ParseControlLine(line);
+    CHECK(bpm.kind == ControlKind::Notification);
+    CHECK(bpm.name == kind::kBpm);
+    CHECK(bpm.payload.find("120") != std::string::npos);
+
     // 5. OpenUtau ends the session; only that side sends close (§5.1).
     REQUIRE(WriteLine(loop.client.get(), "close"));
     CHECK(!connection.Poll(kWaitMs));

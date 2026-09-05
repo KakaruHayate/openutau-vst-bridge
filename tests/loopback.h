@@ -34,6 +34,7 @@ public:
     std::vector<std::string> ustx;
     std::vector<PartLayout> parts;
     std::vector<std::vector<TrackInfo>> trackUpdates;
+    std::vector<ProjectInfo> projectInfos;
     std::vector<std::pair<std::string, std::vector<uint8_t>>> audio;
 
     void OnUstx(const std::string &document) override { ustx.push_back(document); }
@@ -46,6 +47,8 @@ public:
     void OnTracks(const std::vector<TrackInfo> &tracks) override {
         trackUpdates.push_back(tracks);
     }
+
+    void OnProjectInfo(const ProjectInfo &info) override { projectInfos.push_back(info); }
 
     void OnAudio(const std::string &hash, std::vector<uint8_t> &&pcm) override {
         audio.emplace_back(hash, std::move(pcm));

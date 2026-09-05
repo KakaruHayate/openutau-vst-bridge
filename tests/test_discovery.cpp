@@ -39,7 +39,7 @@ TEST_CASE("An advertisement carries the port, the name and the api version") {
     std::string body = ReadAll(files[0]);
     CHECK(body.find("\"port\":52341") != std::string::npos);
     CHECK(body.find("\"name\":\"OpenUtau Bridge (Track 1)\"") != std::string::npos);
-    CHECK(body.find("\"apiVersion\":\"1.0\"") != std::string::npos);
+    CHECK(body.find("\"apiVersion\":\"1.1\"") != std::string::npos);
     // A BOM would be one more thing for a JSON reader to trip over.
     CHECK(body.substr(0, 1) == "{");
 }

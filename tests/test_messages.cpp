@@ -6,16 +6,20 @@
 #include <vector>
 
 using bridge::BuildDiscoveryJson;
+using bridge::BuildBpmPayload;
 using bridge::BuildFailEnvelope;
 using bridge::BuildGetAudioPayload;
 using bridge::BuildInitResponseEnvelope;
 using bridge::BuildPartLayoutResponseEnvelope;
+using bridge::BuildPlayheadPayload;
 using bridge::Envelope;
 using bridge::ParseEnvelope;
 using bridge::ParsePartLayoutRequest;
+using bridge::ParseProjectInfoNotification;
 using bridge::ParseTracksNotification;
 using bridge::ParseUstxPayload;
 using bridge::PartLayout;
+using bridge::ProjectInfo;
 using bridge::TrackInfo;
 
 namespace {
@@ -108,7 +112,7 @@ TEST_CASE("envelopes report success and carry their data") {
     REQUIRE(ParseEnvelope(initResponse, &envelope));
     CHECK(envelope.success);
     CHECK(envelope.error.empty());
-    CHECK(Contains(initResponse, "\"apiVersion\":\"1.0\""));
+    CHECK(Contains(initResponse, "\"apiVersion\":\"1.1\""));
 
     std::string layoutResponse = BuildPartLayoutResponseEnvelope({"7", "8"});
     REQUIRE(ParseEnvelope(layoutResponse, &envelope));
@@ -143,5 +147,37 @@ TEST_CASE("the discovery file advertises port, name and version") {
     std::string json = BuildDiscoveryJson(52341, "OpenUtau Bridge (Track 1)");
     CHECK(Contains(json, "\"port\":52341"));
     CHECK(Contains(json, "\"name\":\"OpenUtau Bridge (Track 1)\""));
-    CHECK(Contains(json, "\"apiVersion\":\"1.0\""));
+    CHECK(Contains(json, "\"apiVersion\":\"1.1\""));
+}
+
+TEST_CASE("project info parses its name and saved state") {
+    ProjectInfo info;
+    REQUIRE(ParseProjectInfoNotification(R"({"name":"my song","saved":true})", &info));
+    CHECK(info.name == "my song");
+    CHECK(info.saved);
+
+    // An unsaved project reports no name and saved false, on the wire as absent fields.
+    REQUIRE(ParseProjectInfoNotification("{}", &info));
+    CHECK(info.name.empty());
+    CHECK_FALSE(info.saved);
+
+    // Wrong-typed fields default rather than throw; only a non-object is a shape error.
+    REQUIRE(ParseProjectInfoNotification(R"({"name":42,"saved":"yes"})", &info));
+    CHECK(info.name.empty());
+    CHECK_FALSE(info.saved);
+    CHECK_FALSE(ParseProjectInfoNotification("nonsense", &info));
+    CHECK_FALSE(ParseProjectInfoNotification("[]", &info));
+}
+
+TEST_CASE("the playhead payload names its position and play state") {
+    std::string json = BuildPlayheadPayload(1250.0, true);
+    CHECK(Contains(json, "\"positionMs\":1250"));
+    CHECK(Contains(json, "\"playing\":true"));
+
+    CHECK(Contains(BuildPlayheadPayload(0.0, false), "\"playing\":false"));
+}
+
+TEST_CASE("the bpm payload carries the tempo") {
+    CHECK(BuildBpmPayload(120.0) == "{\"bpm\":120.0}");
+    CHECK(BuildBpmPayload(137.5) == "{\"bpm\":137.5}");
 }

@@ -114,8 +114,8 @@ int main(int argc, char **argv) {
     std::vector<float> left(options.blockFrames, 0.0f);
     std::vector<float> right(options.blockFrames, 0.0f);
     // A transport that is playing from the first block, which is also the edge that makes the
-    // session send playbackStarted.
-    session.NotePlaying(true);
+    // session send playbackStarted. The host's own tempo is reported once it is known.
+    session.NoteTransport(true, 0.0, true, false, 0.0);
 
     const int64_t startMs = bridge::NowMs();
     // Monotonic, for pacing; the position it renders at is this folded into the loop, so a part
@@ -133,9 +133,12 @@ int main(int argc, char **argv) {
             // The transport jumped back to the top of the loop, which a DAW reports as a fresh
             // start — and a start is what makes the session send playbackStarted, so looping is
             // also how that notification gets exercised.
-            session.NotePlaying(false);
-            session.NotePlaying(true);
+            session.NoteTransport(false, 0.0, false, false, 0.0);
+            session.NoteTransport(true, 0.0, true, false, 0.0);
         }
+        // The position feeds the v1.1 playhead notifications as well as the renderer.
+        session.NoteTransport(true, static_cast<double>(position) / options.sampleRate, true,
+                              false, 0.0);
         lastPosition = position;
         session.Render(position, left.size(), left.data(), right.data());
         for (size_t i = 0; i < left.size(); i++) {
@@ -168,7 +171,7 @@ int main(int argc, char **argv) {
     }
 
     std::printf("Stopping.\n");
-    session.NotePlaying(false);
+    session.NoteTransport(false, 0.0, false, false, 0.0);
     session.Stop();
     return 0;
 }
