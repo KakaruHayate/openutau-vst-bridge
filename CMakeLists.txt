@@ -115,6 +115,20 @@ if (BRIDGE_ENABLE_GUI)
 
     target_sources(${PROJECT_NAME}-impl PRIVATE src/gui_yup.cpp)
     target_link_libraries(${PROJECT_NAME}-impl PRIVATE yup::yup_gui sdl::sdl)
+
+    if (APPLE)
+        # The module sources compile inside our impl target, but YUP normally marks its
+        # Apple ObjC sources as ARC on targets of its own. Without the flag, its .mm files
+        # compile as manual reference counting and the __weak references fail.
+        file(GLOB_RECURSE yup_objc_sources
+             "${yup_SOURCE_DIR}/modules/*.mm"
+             "${yup_SOURCE_DIR}/modules/*.m")
+        if (yup_objc_sources)
+            set_source_files_properties(${yup_objc_sources}
+                TARGET_DIRECTORY ${PROJECT_NAME}-impl
+                PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        endif()
+    endif()
 else()
     target_sources(${PROJECT_NAME}-impl PRIVATE src/gui_stub.cpp)
 endif()

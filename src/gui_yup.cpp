@@ -57,7 +57,7 @@ void *ParentHandle(const clap_window_t *window) {
 #elif YUP_MAC
     return window->cocoa;
 #else
-    return window->x11;
+    return reinterpret_cast<void *>(window->x11);  // clap_xwnd is an integer id.
 #endif
 }
 
@@ -347,8 +347,28 @@ const clap_plugin_gui_t &GuiTable() {
 
 /// Everything InfoWindow::impl_ points at. Created on the main thread by CreateInfoWindow;
 /// the gui extension guarantees every later call lands there too.
+///
+/// The YUP side is built lazily, on the first Show or EmbedInto — the point where a host
+/// has actually asked for an editor, exactly when YUP's own CLAP client constructs its
+/// wrapper. Building eagerly instead would drag SDL and the message manager up inside
+/// hosts that never open the window, among them the VST3 validator, which does not
+/// survive that.
 struct YupWindow final : private yup::Timer {
-    explicit YupWindow(Session &s) : state(std::make_unique<EditorState>(s)) {
+    explicit YupWindow(Session &s) : session(&s) {}
+
+    ~YupWindow() override { stopTimer(); }
+
+    void Attach(void *parent) {
+        if (attached) {
+            return;
+        }
+
+        // Mirrors YUP's own CLAP client: the windowing initialiser lives as long as the
+        // editor, then the tree is built, embedded as a decoration-less child when a
+        // parent is given (else as a free top-level window), refreshed once and put on
+        // the refresh timer.
+        initialiser = std::make_unique<yup::ScopedYupInitialiser_Windowing>();
+        state = std::make_unique<EditorState>(*session);
         editor = std::make_unique<yup::Component>("bridgeEditor");
 
         editor->addAndMakeVisible(*state->trackBox);
@@ -361,13 +381,7 @@ struct YupWindow final : private yup::Timer {
 
         state->Layout();
         editor->setSize(kWindowWidth, kWindowHeight);
-    }
 
-    ~YupWindow() override { stopTimer(); }
-
-    void Attach(void *parent) {
-        // Mirrors YUP's own CLAP client: embed as a decoration-less child when a parent is
-        // given, else as a free top-level window, then one initial refresh and the timer.
         auto flags = yup::ComponentNative::defaultFlags &
                      ~yup::ComponentNative::decoratedWindow;
         auto options = yup::ComponentNative::Options()
@@ -388,6 +402,8 @@ struct YupWindow final : private yup::Timer {
         }
     }
 
+    Session *session = nullptr;
+    std::unique_ptr<yup::ScopedYupInitialiser_Windowing> initialiser;
     std::unique_ptr<yup::Component> editor;
     std::unique_ptr<EditorState> state;
     bool attached = false;
@@ -413,7 +429,9 @@ void InfoWindow::Show() {
 
 void InfoWindow::Hide() {
     auto *window = static_cast<YupWindow *>(impl_);
-    window->editor->setVisible(false);
+    if (window->attached) {
+        window->editor->setVisible(false);
+    }
 }
 
 void InfoWindow::EmbedInto(void *parent) {
@@ -433,8 +451,10 @@ void InfoWindow::Retitle(const char *title) {
 
 bool InfoWindow::SetContentScale(float scale) {
     auto *window = static_cast<YupWindow *>(impl_);
-    window->editor->contentScaleChanged(scale);
-    return true;
+    if (window->attached) {
+        window->editor->contentScaleChanged(scale);
+    }
+    return true;  // Accepted either way: it applies when the editor is built.
 }
 
 void GuiRegister(const clap_plugin_t *plugin, InfoWindow *window) {
