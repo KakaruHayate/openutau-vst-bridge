@@ -417,6 +417,18 @@ TEST_CASE("The handover holds up with a reader and a writer running at once") {
         }
     });
 
+    // The reader has to be inside its loop before the writer starts retiring. These rounds
+    // are over in milliseconds, which is faster than a loaded runner sometimes starts a
+    // thread — a reader that was never scheduled is not a concurrency test, it is a flake.
+    bool readerRan = false;
+    for (int i = 0; i < 5000 && !readerRan; i++) {
+        readerRan = blocks.load() > 0 || bad.load() > 0;
+        if (!readerRan) {
+            std::this_thread::yield();
+        }
+    }
+    CHECK(readerRan);
+
     for (int i = 1; i <= kRounds; i++) {
         box.Publish(Snapshot({Placed(Ramp(4), i)}));
         box.Collect();
