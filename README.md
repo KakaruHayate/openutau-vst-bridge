@@ -45,6 +45,11 @@ Built clap-first: one implementation, wrapped into each format by
 
 Pro Tools is out of scope: AAX requires an SDK available only under an Avid agreement.
 
+## Documentation
+
+- English: this README, and [`PROTOCOL.md`](PROTOCOL.md) for the wire contract.
+- 中文：[使用说明书](MANUAL.zh-CN.md) · [预发布说明](RELEASE.zh-CN.md) · [测试指南](TESTING.zh-CN.md)
+
 ## Licensing
 
 This project is MPL-2.0. MPL-2.0 is file-level copyleft, so the permissively licensed
