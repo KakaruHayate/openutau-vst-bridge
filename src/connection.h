@@ -34,6 +34,9 @@ public:
 
     virtual void OnTracks(const std::vector<TrackInfo> &tracks) = 0;
 
+    /// The project's display name and saved state, from `updateProjectInfo` (v1.1).
+    virtual void OnProjectInfo(const ProjectInfo &info) = 0;
+
     /// A payload that has already passed its hash and frame-size checks.
     virtual void OnAudio(const std::string &hash, std::vector<uint8_t> &&pcm) = 0;
 };

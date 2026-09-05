@@ -5,6 +5,7 @@
 #include "messages.h"
 
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <thread>
 #include <utility>
@@ -58,6 +59,8 @@ void Session::Run() {
     while (!stop_.load()) {
         PumpInputs();
         ServeConnection();
+        PumpPlayhead();
+        PumpTempo();
         if (dirty_) {
             dirty_ = false;
             Republish();
@@ -123,6 +126,13 @@ void Session::ServeConnection() {
     connection_ = std::make_unique<Connection>(stream_.get(),
                                                static_cast<ConnectionHandler *>(this));
     connected_.store(true);
+    // A fresh connection knows nothing of what was reported before it. Inverting the last-sent
+    // play state makes the current one a change, so position and tempo are reported immediately
+    // rather than after their first interval.
+    sentPlaying_ = !playing_.load();
+    sentPositionMs_ = 0.0;
+    lastPlayheadMs_ = 0;
+    tempoSent_ = false;
 }
 
 void Session::Republish() {
@@ -156,7 +166,74 @@ std::vector<std::string> Session::OnPartLayout(const std::vector<PartLayout> &pa
 
 void Session::OnTracks(const std::vector<TrackInfo> &tracks) {
     tracks_ = tracks;
+    {
+        std::lock_guard<std::mutex> lock(uiMutex_);
+        trackNames_.clear();
+        trackNames_.reserve(tracks.size());
+        for (const TrackInfo &track : tracks) {
+            trackNames_.push_back(track.name);
+        }
+    }
     dirty_ = true;
+}
+
+void Session::OnProjectInfo(const ProjectInfo &info) {
+    {
+        std::lock_guard<std::mutex> lock(uiMutex_);
+        projectName_ = info.name;
+        projectSaved_ = info.saved;
+    }
+    BRIDGE_INFO("Project is \"%s\" (%s).", info.name.c_str(),
+                info.saved ? "saved" : "unsaved");
+}
+
+void Session::PumpPlayhead() {
+    // A pending playbackStarted goes out first (PumpInputs sends it). Reporting a position
+    // ahead of the start it belongs to would scramble the order at the receiver, so this
+    // waits a round rather than racing the flag.
+    if (playbackStarted_.load()) {
+        return;
+    }
+    if (connection_ == nullptr || !hasPosition_.load()) {
+        return;
+    }
+    bool playing = playing_.load();
+    double positionMs = positionSeconds_.load() * 1000.0;
+    int64_t now = NowMs();
+    bool due = false;
+    if (playing != sentPlaying_) {
+        // A state change is never throttled: it is what tells OpenUtau the DAW has started,
+        // stopped or begun scrubbing.
+        due = true;
+    } else if (playing) {
+        due = now - lastPlayheadMs_ >= kPlayheadIntervalMs;
+    } else {
+        // Parked: only movement is news, so a scrub is reported and a still playhead is not.
+        due = std::abs(positionMs - sentPositionMs_) > kPlayheadScrubMs;
+    }
+    if (!due) {
+        return;
+    }
+    if (connection_->SendNotification(kind::kPlayhead,
+                                      BuildPlayheadPayload(positionMs, playing))) {
+        sentPlaying_ = playing;
+        sentPositionMs_ = positionMs;
+        lastPlayheadMs_ = now;
+    }
+}
+
+void Session::PumpTempo() {
+    if (connection_ == nullptr || !hasTempo_.load()) {
+        return;
+    }
+    double tempo = tempo_.load();
+    if (tempoSent_ && std::abs(tempo - sentTempo_) <= kTempoEpsilon) {
+        return;
+    }
+    if (connection_->SendNotification(kind::kBpm, BuildBpmPayload(tempo))) {
+        sentTempo_ = tempo;
+        tempoSent_ = true;
+    }
 }
 
 void Session::OnAudio(const std::string &hash, std::vector<uint8_t> &&pcm) {
@@ -209,11 +286,32 @@ bool Session::WaitForSync() {
     return false;
 }
 
-void Session::NotePlaying(bool playing) {
+void Session::NoteTransport(bool hasPosition, double seconds, bool playing, bool hasTempo,
+                            double tempo) {
+    hasPosition_.store(hasPosition);
+    positionSeconds_.store(seconds);
+    playing_.store(playing);
+    hasTempo_.store(hasTempo);
+    tempo_.store(tempo);
     if (playing && !wasPlaying_) {
         playbackStarted_.store(true);
     }
     wasPlaying_ = playing;
+}
+
+UiState Session::UiCopy() const {
+    UiState state;
+    state.connected = connected_.load();
+    state.port = listener_.Port();
+    state.trackNo = trackNo_.load();
+    state.hasTempo = hasTempo_.load();
+    state.tempo = tempo_.load();
+    state.playing = playing_.load();
+    std::lock_guard<std::mutex> lock(uiMutex_);
+    state.projectName = projectName_;
+    state.projectSaved = projectSaved_;
+    state.trackNames = trackNames_;
+    return state;
 }
 
 }  // namespace bridge

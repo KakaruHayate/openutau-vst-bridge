@@ -7,7 +7,7 @@
  * Thread rules, which are the reason this class exists at all:
  *   - The worker thread owns the connection, the store and the layout. Nothing else touches
  *     them, so none of them needs a lock.
- *   - The audio thread calls Render() and NotePlaying(). Both are wait-free.
+ *   - The audio thread calls Render() and NoteTransport(). Both are wait-free.
  *   - Everything the host tells us on the main thread (sample rate, track index) arrives as an
  *     atomic the worker picks up on its next round, rather than as a call into its state.
  *
@@ -26,12 +26,27 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
 
 namespace bridge {
+
+/// What an info window shows about one instance. Copied out wholesale by `UiCopy()` on the
+/// main thread; the numbers come from atomics, the strings from a mutex-guarded block.
+struct UiState {
+    bool connected = false;
+    int port = 0;
+    std::string projectName;
+    bool projectSaved = false;
+    std::vector<std::string> trackNames;
+    int trackNo = 0;
+    bool hasTempo = false;
+    double tempo = 0.0;
+    bool playing = false;
+};
 
 class Session final : private ConnectionHandler {
 public:
@@ -96,18 +111,35 @@ public:
     /// source of the plugin's output. Silence when nothing is connected or nothing is placed.
     void Render(int64_t fromFrame, size_t frames, float *left, float *right);
 
-    /// Audio thread. The transport's play state, every block. Its rising edge is what
-    /// `playbackStarted` reports (§6.1), so OpenUtau can prioritise rendering what is about to
-    /// be heard; the notification itself is sent from the worker.
-    void NotePlaying(bool playing);
+    /// Audio thread. The transport, every block: position, play state and tempo. These feed
+    /// the `playhead` and `bpm` notifications (v1.1) and the info window; the notifications
+    /// themselves are sent from the worker, throttled there. The play state's rising edge is
+    /// also what `playbackStarted` reports (§6.1).
+    void NoteTransport(bool hasPosition, double seconds, bool playing, bool hasTempo,
+                       double tempo);
+
+    /// Main thread. A consistent snapshot for the info window. The mutex is held only for
+    /// the string members, briefly; this is never called from the audio thread.
+    UiState UiCopy() const;
 
 private:
     /// How long one offline block waits for audio that has not arrived. Generous because a bounce
     /// has no deadline of its own, and bounded because OpenUtau might never answer.
     static constexpr int kOfflineWaitMs = 5000;
 
+    /// How often a moving playhead is reported while the DAW is playing (v1.1). Fast enough
+    /// that OpenUtau's own playhead stays close, slow enough that a busy poll round sends
+    /// nothing; a state change or a scrub is never throttled.
+    static constexpr int64_t kPlayheadIntervalMs = 100;
+    /// How far a parked playhead must move before its position is worth a notification.
+    static constexpr double kPlayheadScrubMs = 50.0;
+    /// Tempo changes below this are noise; OpenUtau's own matching tolerance is 0.5 BPM.
+    static constexpr double kTempoEpsilon = 0.01;
+
     void Run();
     void PumpInputs();
+    void PumpPlayhead();
+    void PumpTempo();
     void ServeConnection();
     void Republish();
 
@@ -119,6 +151,7 @@ private:
     void OnUstx(const std::string &ustx) override;
     std::vector<std::string> OnPartLayout(const std::vector<PartLayout> &parts) override;
     void OnTracks(const std::vector<TrackInfo> &tracks) override;
+    void OnProjectInfo(const ProjectInfo &info) override;
     void OnAudio(const std::string &hash, std::vector<uint8_t> &&pcm) override;
 
     Listener listener_;
@@ -147,6 +180,13 @@ private:
     /// Set by the audio thread on a rising play edge, cleared by the worker when it sends the
     /// notification. A flag rather than a queue: two starts one poll apart are one start.
     std::atomic<bool> playbackStarted_{false};
+    /// The transport as the audio thread last saw it. `positionSeconds_` is meaningful only
+    /// when `hasPosition_` holds; likewise `tempo_` under `hasTempo_`.
+    std::atomic<bool> hasPosition_{false};
+    std::atomic<double> positionSeconds_{0.0};
+    std::atomic<bool> playing_{false};
+    std::atomic<bool> hasTempo_{false};
+    std::atomic<double> tempo_{0.0};
     /// Whether the host is bouncing rather than playing, and whether the worker has everything
     /// the layout names.
     std::atomic<bool> offline_{false};
@@ -157,6 +197,21 @@ private:
     std::atomic<bool> hopeless_{false};
     /// Audio thread only, so the edge is detected where the transport is seen.
     bool wasPlaying_ = false;
+
+    // --- worker thread only: what has already been reported upstream ---
+    /// The playhead as last sent. `sentPlaying_` is initialised inverted so that a fresh
+    /// connection reports the current state as a change, whatever it is.
+    bool sentPlaying_ = true;
+    double sentPositionMs_ = 0.0;
+    int64_t lastPlayheadMs_ = 0;
+    double sentTempo_ = 0.0;
+    bool tempoSent_ = false;
+
+    // --- the info window's strings, written on the worker, read on the main thread ---
+    mutable std::mutex uiMutex_;
+    std::string projectName_;
+    bool projectSaved_ = false;
+    std::vector<std::string> trackNames_;
 };
 
 }  // namespace bridge

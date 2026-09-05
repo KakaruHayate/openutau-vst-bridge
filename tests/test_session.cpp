@@ -202,14 +202,24 @@ TEST_CASE("A session is found through its advertisement and plays what OpenUtau 
     CHECK(elsewhere.left == std::vector<float>(4, 0.0f));
 
     // The transport, which is the only thing the plugin brings up unprompted.
-    session.NotePlaying(false);
-    session.NotePlaying(true);
+    session.NoteTransport(false, 0.0, false, false, 0.0);
+    session.NoteTransport(true, 1.0, true, false, 0.0);
     ControlLine started = utau.ReadControl();
     CHECK(started.kind == ControlKind::Notification);
     CHECK(started.name == kind::kPlaybackStarted);
-    // Still playing is not a start: an edge is a change, not a state.
-    session.NotePlaying(true);
-    CHECK(utau.ReadControl(150).kind == ControlKind::Unknown);
+    // Still playing is not a start: an edge is a change, not a state. The playhead now
+    // streams while playing, so everything but a second start is tolerated here.
+    session.NoteTransport(true, 1.01, true, false, 0.0);
+    bool anotherStart = false;
+    int64_t edgeDeadline = bridge::NowMs() + 400;
+    while (bridge::NowMs() < edgeDeadline) {
+        ControlLine line = utau.ReadControl(50);
+        if (line.kind == ControlKind::Notification && line.name == kind::kPlaybackStarted) {
+            anotherStart = true;
+            break;
+        }
+    }
+    CHECK_FALSE(anotherStart);
 
     REQUIRE(utau.Send("close"));
     CHECK(WaitUntilDisconnected(session));
@@ -315,6 +325,76 @@ TEST_CASE("A host sample-rate change makes the session ask for every part again"
                         [](const Block &out) { return out.left[200] > 0.4f; }));
     CHECK(atHostRate.left[200] == doctest::Approx(0.5).epsilon(0.02));
     CHECK(atHostRate.right[200] == doctest::Approx(0.5).epsilon(0.02));
+
+    session.Stop();
+}
+
+TEST_CASE("The transport is reported upstream and project info reaches the window") {
+    // v1.1: the playhead and bpm notifications, throttled by the worker, and the
+    // updateProjectInfo snapshot the info window reads.
+    TempDir dir;
+    Session session(dir.path);
+    session.SetHostSampleRate(44100.0);
+    REQUIRE(session.Start());
+    FakeOpenUtau utau;
+    REQUIRE(utau.Connect(session.Port()));
+
+    // Reads past anything that is not the wanted notification (heartbeats, playbackStarted,
+    // and the playhead's own repeats while playing).
+    auto ReadUntil = [&](const char *kindName, const std::string &needle) {
+        int64_t deadline = bridge::NowMs() + kWaitMs;
+        while (bridge::NowMs() < deadline) {
+            ControlLine line = utau.ReadControl(100);
+            if (line.kind == ControlKind::Notification && line.name == kindName &&
+                (needle.empty() || line.payload.find(needle) != std::string::npos)) {
+                return line;
+            }
+        }
+        return ControlLine{};
+    };
+
+    // Project info is window state, not mixer state: it changes what UiCopy shows.
+    REQUIRE(utau.Send(bridge::BuildNotificationLine(
+        kind::kUpdateProjectInfo, R"({"name":"my song","saved":true})")));
+    REQUIRE(WaitUntil([&session] {
+        bridge::UiState state = session.UiCopy();
+        return state.projectName == "my song" && state.projectSaved;
+    }));
+
+    // A parked transport with a position: the first report is a state change, and the tempo
+    // has never been sent.
+    session.NoteTransport(true, 2.0, false, true, 120.0);
+    ControlLine playhead = ReadUntil(kind::kPlayhead, "\"positionMs\":2000");
+    CHECK(playhead.payload.find("\"playing\":false") != std::string::npos);
+    ControlLine bpm = ReadUntil(kind::kBpm, "120");
+    CHECK(bpm.name == kind::kBpm);
+
+    // Parked at the same place is not news.
+    session.NoteTransport(true, 2.0, false, true, 120.0);
+    CHECK(utau.ReadControl(300).kind == ControlKind::Unknown);
+
+    // A scrub is.
+    session.NoteTransport(true, 5.0, false, true, 120.0);
+    ReadUntil(kind::kPlayhead, "\"positionMs\":5000");
+
+    // Playing reports continuously, at the throttle's pace rather than on every poll.
+    session.NoteTransport(true, 5.0, true, true, 120.0);
+    playhead = ReadUntil(kind::kPlayhead, "\"playing\":true");
+    bool saw6000 = WaitUntil([&] {
+        session.NoteTransport(true, 6.0, true, true, 120.0);
+        ControlLine line = utau.ReadControl(50);
+        return line.kind == ControlKind::Notification && line.name == kind::kPlayhead &&
+               line.payload.find("\"positionMs\":6000") != std::string::npos;
+    });
+    CHECK(saw6000);
+
+    // Tempo changes are reported; sub-epsilon ones are not.
+    session.NoteTransport(true, 6.0, true, true, 137.5);
+    ReadUntil(kind::kBpm, "137.5");
+    session.NoteTransport(true, 6.0, false, true, 137.505);  // Stops, to silence the playhead.
+    ReadUntil(kind::kPlayhead, "");                          // The stop itself is a change.
+    session.NoteTransport(true, 6.0, false, true, 137.505);
+    CHECK(utau.ReadControl(300).kind == ControlKind::Unknown);
 
     session.Stop();
 }

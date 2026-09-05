@@ -108,6 +108,18 @@ bool ParseTracksNotification(const std::string &json, std::vector<TrackInfo> *tr
     return true;
 }
 
+bool ParseProjectInfoNotification(const std::string &json, ProjectInfo *info) {
+    Json object = ParseObject(json);
+    if (object.is_null()) {
+        return false;
+    }
+    // Absent fields mean unsaved and unnamed, which is what OpenUtau reports for a project
+    // that has never been written to disk; nothing here is worth refusing a notification over.
+    info->name = ReadString(object, "name");
+    info->saved = ReadBool(object, "saved", false);
+    return true;
+}
+
 bool ParseEnvelope(const std::string &json, Envelope *envelope) {
     Json object = ParseObject(json);
     if (object.is_null()) {
@@ -151,6 +163,18 @@ std::string BuildFailEnvelope(const std::string &error) {
 
 std::string BuildGetAudioPayload(const std::string &hash) {
     return Json{{"hash", hash}}.dump();
+}
+
+std::string BuildPlayheadPayload(double positionMs, bool playing) {
+    Json payload = {
+        {"positionMs", positionMs},
+        {"playing", playing},
+    };
+    return payload.dump();
+}
+
+std::string BuildBpmPayload(double bpm) {
+    return Json{{"bpm", bpm}}.dump();
 }
 
 std::string BuildEmptyPayload() {

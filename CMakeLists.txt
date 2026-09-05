@@ -84,6 +84,10 @@ if (WIN32)
     # Winsock. PUBLIC because the tests link the implementation directly and open a real
     # loopback socket to exercise the framing end to end.
     target_link_libraries(${PROJECT_NAME}-impl PUBLIC ws2_32)
+    # The info window. PRIVATE: nothing but the plugin loads a gui, and the tests must not
+    # need a window just to link the implementation.
+    target_sources(${PROJECT_NAME}-impl PRIVATE src/gui_win32.cpp)
+    target_link_libraries(${PROJECT_NAME}-impl PRIVATE user32 gdi32)
 endif()
 
 make_clapfirst_plugins(

@@ -72,7 +72,7 @@ One JSON file per plugin instance:
 {
   "port": 52341,
   "name": "OpenUtau Bridge (Track 1)",
-  "apiVersion": "1.0"
+  "apiVersion": "1.1"
 }
 ```
 
@@ -114,7 +114,7 @@ audio <hash> <length>\n
 ```
 
 - `hash`: decimal XXH64 of the payload bytes, **serialized as a decimal string** (e.g. `"13507256038857166760"`). Never as a JSON number — 64-bit values exceed the 2^53 safe-integer limit of JS/`double` parsers. In the data-plane frame header the hash is the same decimal string (unquoted, as it is outside JSON).
-- `length`: decimal byte count. The receiver MUST read exactly `length` bytes after the header line (the frame does not end at `\n`).
+- `length`: decimal byte count. The receiver MUST read exactly `length` bytes after the header line (the frame does not end at `\n`). A length above **268435456** (256 MiB, `DawAudio.MaxFrameBytes` — about 12.7 minutes of 44.1 kHz stereo float32) is a malformed frame: the receiver MUST refuse it as a protocol error rather than allocate, because the length is peer-controlled. Senders MUST NOT emit frames above this bound.
 - Distinguish the planes on receive: a line starting with `audio ` is a data frame header; anything else is a control line.
 
 ---
@@ -126,7 +126,7 @@ audio <hash> <length>\n
 #### `init` (request)
 
 - `request:<uuid>:init`, payload `{ "ustx": "<full USTX project document>" }`
-- Response `data`: `{ "apiVersion": "1.0" }`
+- Response `data`: `{ "apiVersion": "1.1" }`
 - Sent once at connect; the full project is the baseline. OpenUtau is the sole owner of the project, so the baseline only ever travels outward and is never echoed back.
 
 #### `updateUstx` (notification)
@@ -157,7 +157,17 @@ audio <hash> <length>\n
 - `volume`/`pan` are passed through in OpenUtau's internal scale, unconverted: `UTrack.Volume` is **decibels** (`0` = unity) and `UTrack.Pan` is **-100..+100** (`0` = centre).
 - `muted` is the **effective** mute: `UTrack.Muted`, which already has solo resolved against the rest of the project.
 - These fields remain on the wire for compatibility and for peers that need the OpenUtau mixer state. The bridge's default output is **pre-fader**: it does not apply `volume`, `pan`, or `muted`. The DAW owns gain, pan, mute and solo so the dry signal entering its effects chain stays stable while the OpenUtau performance is edited.
+- Pre-fader output is scaled by a **constant output trim of √0.5 (≈ 0.7071, −3.01 dB) per channel**. OpenUtau pans constant-power, so its own playback of a centred track puts cos(π/4) on each channel; a bridge that bypassed panning without this trim would sit a systematic 3 dB above the level the performance was tuned against. The trim is not mixer state: it never follows `volume`, `pan` or `muted`.
 - A bridge may therefore receive a muted track and still request/render its part audio. `muted` is not a request to omit audio from the data plane.
+
+#### `updateProjectInfo` (notification) — v1.1
+
+```json
+{ "name": "my song", "saved": true }
+```
+
+- What a plugin's info window shows about the project. `name` is the project file's stem; an unsaved project reports `saved` false and an empty `name`.
+- Part of the fast debounced stream (§7): pushed once per full sync and whenever the project is saved or renamed. A plugin may ignore it — it carries no state the mixer or renderer needs.
 
 ### 6.2 Plugin → OpenUtau
 
@@ -182,6 +192,24 @@ audio 13507256038857166760 3528000\n<3528000 raw bytes>
 
 `{}` on DAW transport play rising edge; OpenUtau flushes pending debounced updates (§7).
 
+#### `playhead` (notification) — v1.1
+
+```json
+{ "positionMs": 12500.0, "playing": false }
+```
+
+- The DAW's transport position, **one-way towards OpenUtau**: the received position simply overwrites OpenUtau's playhead, converted to ticks on the project's own time axis. The reverse direction does not exist — OpenUtau never reports its own position, and there is no reply or acknowledgement.
+- `positionMs` is absolute milliseconds on the shared timeline — the same coordinate `updatePartLayout`'s `startMs` uses. Moves smaller than **5 ticks** at the destination are ignored as jitter.
+- Throttling is the sender's choice. The reference bridge reports **state changes immediately**, **every 100 ms while playing**, and **only when a parked playhead moves more than 50 ms**. Receivers must tolerate any pacing.
+
+#### `bpm` (notification) — v1.1
+
+```json
+{ "bpm": 137.5 }
+```
+
+- The DAW project's tempo, sent when it changes. Without ARA there is no tempo-map sync (§1): OpenUtau uses this only as a guard — warning the user once per distinct mismatch, with a **±0.5 BPM** tolerance, that bars will misalign — never to retempo-map the project.
+
 ### 6.3 MIDI input (reserved — not in v1)
 
 Reserved for a future message family (e.g. `notification:midiNotes`, `request:recordMidi`). The PR #2187 plugin received `MidiEvent*` in `run()` but never relayed it; v1 does not define this direction.
@@ -191,9 +219,9 @@ Reserved for a future message family (e.g. `notification:midiNotes`, `request:re
 ## 7. Sync Semantics & Debouncing
 
 - OpenUtau subscribes to `DocManager` command stream; reacts to render/volume/pan changes while connected.
-- Debounce: `updateUstx` + `updateTracks` = **1 s**; `updatePartLayout`/audio = **5 s**.
+- Debounce: `updateUstx` + `updateTracks` + `updateProjectInfo` (v1.1) = **1 s**; `updatePartLayout`/audio = **5 s**.
 - **Playback flush:** on `playbackStarted`, both debounce queues flush before playback begins.
-- **Full sync:** after every (re)connect: `updateUstx` → `updateTracks` → `updatePartLayout`(+ audio pull), serialized by a semaphore; one update in flight per connection.
+- **Full sync:** after every (re)connect: `updateUstx` → `updateTracks` → `updateProjectInfo` (v1.1) → `updatePartLayout`(+ audio pull), serialized by a semaphore; one update in flight per connection.
 
 ## 8. Error Handling
 
@@ -243,7 +271,7 @@ disconnect (user)   → final update → "close" → teardown
 ## 13. Test Strategy
 
 - **Main repo (unit):** framing (control + data plane), request/response/timeout, heartbeat, debounce flush — `OpenUtau.Test/Core/DawIntegration/`.
-- **Main repo (conformance):** `DawTestPlugin` is a loopback TCP server that plays the plugin half, built on the shipping `DawTransport` so the framing is only implemented once; `DawConformanceTest` drives `init → updateTracks → updatePartLayout → getAudio → playbackStarted` against the real `DawManager` through a real discovery directory.
+- **Main repo (conformance):** `DawTestPlugin` is a loopback TCP server that plays the plugin half, built on the shipping `DawTransport` so the framing is only implemented once; `DawConformanceTest` drives `init → updateTracks → updateProjectInfo → updatePartLayout → getAudio → playbackStarted` (and the v1.1 `playhead`/`bpm` notifications) against the real `DawManager` through a real discovery directory.
 - **Plugin repo (conformance):** an independent test client that replays recorded transcripts (including binary frames) against the plugin and asserts responses — the only way to keep both sides honest once code is fully separated.
 
 ## 14. Open Questions (before v1 freeze)
