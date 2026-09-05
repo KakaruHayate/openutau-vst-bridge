@@ -105,8 +105,16 @@ if (BRIDGE_ENABLE_GUI)
     set(YUP_BUILD_WHEEL OFF CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(yup)
 
+    # YUP's gui module compiles its SDL3 windowing backend into the consumer, but only its
+    # audio-plugin and standalone helpers fetch SDL3 — linking yup::yup_gui alone leaves the
+    # module without the headers. The helpers' internal fetch is exactly what we need, and
+    # the function stays defined in scope after MakeAvailable, so call it here and link the
+    # result: the module sources compile inside our impl target, on this target's include
+    # path and against this target's libraries.
+    _yup_fetch_sdl()
+
     target_sources(${PROJECT_NAME}-impl PRIVATE src/gui_yup.cpp)
-    target_link_libraries(${PROJECT_NAME}-impl PRIVATE yup::yup_gui)
+    target_link_libraries(${PROJECT_NAME}-impl PRIVATE yup::yup_gui sdl::sdl)
 else()
     target_sources(${PROJECT_NAME}-impl PRIVATE src/gui_stub.cpp)
 endif()

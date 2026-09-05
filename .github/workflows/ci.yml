@@ -42,6 +42,8 @@ jobs:
         if: runner.os == 'Linux'
         # The VST3 SDK's base library pulls in X11 and friends even for a plugin with no editor.
         # Ninja comes along because it is what clap-wrapper's own validator target shells out to.
+        # The remaining X11/GL/ALSA packages are what the YUP gui module (and its SDL3 windowing
+        # backend) declare as Linux dependencies.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -51,7 +53,11 @@ jobs:
             libxcb-icccm4-dev libxcb-xinerama0-dev \
             libxkbcommon-dev libxkbcommon-x11-dev \
             libfontconfig1-dev libfreetype6-dev libcairo2-dev \
-            libgtkmm-3.0-dev libsqlite3-dev
+            libgtkmm-3.0-dev libsqlite3-dev \
+            libasound2-dev \
+            libxcomposite-dev libxcursor-dev libxext-dev libxi-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev \
+            libglu1-mesa-dev mesa-common-dev
 
       - name: Configure
         # CMAKE_BUILD_TYPE for the single-config generators, --config below for the others.
