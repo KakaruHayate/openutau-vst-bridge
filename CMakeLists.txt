@@ -84,11 +84,24 @@ if (WIN32)
     # Winsock. PUBLIC because the tests link the implementation directly and open a real
     # loopback socket to exercise the framing end to end.
     target_link_libraries(${PROJECT_NAME}-impl PUBLIC ws2_32)
-    # The info window. PRIVATE: nothing but the plugin loads a gui, and the tests must not
-    # need a window just to link the implementation.
+endif()
+
+# The plugin window: native controls per platform — Win32 common controls, AppKit — and
+# a no-op stub where no native backend exists (Linux), which leaves the plugin without a
+# gui extension: a degraded but working plugin whose track is still switchable from the
+# host's own parameter UI. No toolkit dependency anywhere: a window of five labels and
+# one dropdown is not worth a UI framework's build time, binary size or crash surface.
+if (WIN32)
     target_sources(${PROJECT_NAME}-impl PRIVATE src/gui_win32.cpp)
     target_link_libraries(${PROJECT_NAME}-impl PRIVATE user32 gdi32)
-endif()
+elseif (APPLE)
+    target_sources(${PROJECT_NAME}-impl PRIVATE src/gui_cocoa.mm)
+    target_link_libraries(${PROJECT_NAME}-impl PRIVATE "-framework AppKit")
+    # The panel is plain AppKit under ARC; the project's own C++ never touches ObjC.
+    set_source_files_properties(src/gui_cocoa.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+else ()
+    target_sources(${PROJECT_NAME}-impl PRIVATE src/gui_stub.cpp)
+endif ()
 
 make_clapfirst_plugins(
         TARGET_NAME ${PROJECT_NAME}

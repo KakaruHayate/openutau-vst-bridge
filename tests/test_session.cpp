@@ -461,3 +461,38 @@ TEST_CASE("A bounce waits for audio a playback would have rendered as silence") 
 
     session.Stop();
 }
+
+TEST_CASE("Track metadata and the picker's request path reach the window") {
+    // v1.2: updateTracks carries singer/engine per track, the window reads them out of
+    // UiCopy, and a pick made in the window changes the routing immediately while leaving
+    // exactly one pending request for the plugin to report to the host.
+    TempDir dir;
+    Session session(dir.path);
+    session.SetHostSampleRate(44100.0);
+    REQUIRE(session.Start());
+    FakeOpenUtau utau;
+    REQUIRE(utau.Connect(session.Port()));
+
+    REQUIRE(utau.Send(bridge::BuildNotificationLine(
+        kind::kUpdateTracks,
+        R"({"tracks":[{"name":"Lead","singer":"Kikyo","engine":"DIFFSINGER"},)"
+        R"({"name":"Harmony"}]})")));
+    REQUIRE(WaitUntil([&session] {
+        bridge::UiState state = session.UiCopy();
+        return state.tracks.size() == 2 && state.tracks[0].singer == "Kikyo" &&
+               state.tracks[0].engine == "DIFFSINGER" && state.tracks[1].singer.empty();
+    }));
+
+    // The host set the track: no pending request may exist, so nothing would be echoed.
+    session.SetTrackNo(1);
+    CHECK_FALSE(session.ConsumeTrackRequest());
+
+    // The picker set the track: the routing follows at once, and the plugin consumes the
+    // request exactly once before it goes quiet again.
+    session.RequestTrackNo(0);
+    CHECK(session.TrackNo() == 0);
+    CHECK(session.ConsumeTrackRequest());
+    CHECK_FALSE(session.ConsumeTrackRequest());
+
+    session.Stop();
+}

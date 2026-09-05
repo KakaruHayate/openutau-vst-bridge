@@ -67,20 +67,22 @@ OpenUtau Bridge 是一个**乐器插件**（VST3 / CLAP），装在 DAW 里。�
 ### 换轨与多实例
 
 - 每个实例有一个 **`OpenUtau Track` 参数**（DAW 的自动化面板里，显示为 Track 1、Track 2……），决定这个实例播 OpenUtau 的哪条音轨（从 1 数起）。
-- **想在 DAW 里用多条 OpenUtau 音轨**：每条 DAW 轨放一个实例，各自设不同的 `OpenUtau Track`。然后在 OpenUtau 的 DAW Integration 列表里把它们**逐个 Connect**（每个实例一行）。
-- 改这个参数支持自动化，随 DAW 工程保存。
+- **换轨直接在插件窗口里做**：双击插件，点开顶部的下拉框，选一条轨（每项显示「编号：轨名 — 歌手 · 引擎」）。选完立即生效，DAW 的自动化里也会同步记录这次改动。
+- 当然也可以继续用 DAW 参数面板里的 `OpenUtau Track` 参数调，两边随时互相同步；参数支持自动化，随 DAW 工程保存。
+- **想在 DAW 里用多条 OpenUtau 音轨**：每条 DAW 轨放一个实例，各自选不同的轨道。然后在 OpenUtau 的 DAW Integration 列表里把它们**逐个 Connect**（每个实例一行）。
 
-### 信息小窗（仅 Windows）
+### 插件窗口
 
-双击插件打开。显示：
+双击插件打开（Windows 与 macOS 有原生窗口；Linux 暂无插件窗口，切轨可用 DAW 的通用参数面板）。显示：
 
-- **Project**：工程名；未保存时显示 unsaved。在 OpenUtau 里保存后自动更新；
+- **轨道下拉框**（顶部）：选择本实例播 OpenUtau 的哪条音轨；
 - **连接状态与端口**；
+- **Project**：工程名；未保存时显示 (unsaved)。在 OpenUtau 里保存后自动更新；
+- **Track 行**：当前所选音轨的歌手名与渲染引擎（如 Kikyo · DIFFSINGER），换轨或换歌手后自动更新；
 - **Tempo**：当前 DAW 工程速度；
-- **Transport**：playing / stopped；
-- **音轨列表**：OpenUtau 项目的音轨名，本实例负责的那条前面有 ▸。
+- **Transport**：playing / stopped。
 
-窗口只读，不能操作。`OpenUtau Track` 参数仍然在 DAW 的参数面板里调。
+窗口里唯一能操作的就是下拉框；写歌、调音、渲染依然全部在 OpenUtau 里做。
 
 ### 播放头同步
 
