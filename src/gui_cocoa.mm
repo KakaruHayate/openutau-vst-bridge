@@ -24,7 +24,7 @@
 
 // The dropdown item for a track: "N: name - singer - engine", with the informational
 // fields simply left out when OpenUtau reports none.
-static std::string TrackLabel(const TrackInfo &track, size_t index) {
+static std::string TrackLabel(const bridge::TrackInfo &track, size_t index) {
     std::string label = std::to_string(index + 1) + ": " + track.name;
     if (!track.singer.empty()) {
         label += "  \xE2\x80\x94  " + track.singer;  // em dash
@@ -40,7 +40,7 @@ static std::string TrackLabel(const TrackInfo &track, size_t index) {
 /// under a name specific enough to stay out of the host's way.
 @interface OpenUtauBridgePanel : NSView {
     @public
-    Session *_session;
+    bridge::Session *_session;
     std::function<void()> _onTrackPicked;
     NSTextField *_connection;
     NSTextField *_project;
@@ -466,7 +466,9 @@ void InfoWindow::Hide() {
 
 void InfoWindow::EmbedInto(void *parent) {
     auto *state = static_cast<cocoagui::WindowState *>(impl_);
-    NSView *host = static_cast<NSView *>(parent);
+    // The host hands a raw NSView*; under ARC the void* round-trip needs a bridged cast
+    // (ownership stays with the host's view hierarchy, which is what __bridge says).
+    NSView *host = (__bridge NSView *)parent;
     [state->panel removeFromSuperview];
     [host addSubview:state->panel];
     state->panel.frame = host.bounds;
