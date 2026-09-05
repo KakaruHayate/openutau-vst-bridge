@@ -55,6 +55,10 @@ struct Bridge {
     const clap_host_t *host = nullptr;
     const clap_host_params_t *hostParams = nullptr;  // For the picker's flush nudge.
     double sampleRate = 0.0;
+    /// The in-flight picker report: how many of gesture/value/gesture the host queue took,
+    /// and the value it is reporting. See NotifyTrackRequest.
+    int trackNotifyStage_ = 0;
+    double trackNotifyValue_ = 0.0;
     bridge::Session session;
     bridge::InfoWindow *window = nullptr;  // Null where the platform has no gui backend.
 
@@ -168,35 +172,50 @@ void ApplyEvents(Bridge *self, const clap_input_events_t *in) {
 /// it and the host's own controls follow. Queued wherever the host gives us an output
 /// queue - process or flush - and a request_flush from the picker's callback wakes a
 /// stopped host enough to run flush and collect it.
+///
+/// The output queue is allowed to reject events, so the report is staged: the consumed
+/// value and how far the three-event sequence got live in the Bridge, and each call
+/// resumes where the last one stopped. The pending flag is only cleared once the queue
+/// took everything; a value picked mid-report simply re-reads at stage 0, so the newest
+/// choice is what the host sees.
 void NotifyTrackRequest(Bridge *self, const clap_output_events_t *out) {
-    if (out == nullptr || !self->session.ConsumeTrackRequest()) {
+    if (out == nullptr) {
         return;
     }
-    const double value = static_cast<double>(self->session.TrackNo());
-
-    clap_event_param_gesture_t begin{};
-    begin.header.size = sizeof(begin);
-    begin.header.time = 0;
-    begin.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
-    begin.header.type = CLAP_EVENT_PARAM_GESTURE_BEGIN;
-    begin.param_id = kTrackParamId;
-    if (out->try_push(out, &begin.header)) {
-        clap_event_param_value_t event{};
-        event.header.size = sizeof(event);
-        event.header.time = 0;
-        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
-        event.header.type = CLAP_EVENT_PARAM_VALUE;
-        event.param_id = kTrackParamId;
-        event.value = value;
-        out->try_push(out, &event.header);
+    if (self->trackNotifyStage_ == 0) {
+        if (!self->session.ConsumeTrackRequest()) {
+            return;
+        }
+        self->trackNotifyValue_ = static_cast<double>(self->session.TrackNo());
     }
-    clap_event_param_gesture_t end{};
-    end.header.size = sizeof(end);
-    end.header.time = 0;
-    end.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
-    end.header.type = CLAP_EVENT_PARAM_GESTURE_END;
-    end.param_id = kTrackParamId;
-    out->try_push(out, &end.header);
+
+    while (self->trackNotifyStage_ < 3) {
+        bool accepted = false;
+        if (self->trackNotifyStage_ != 1) {
+            clap_event_param_gesture_t gesture{};
+            gesture.header.size = sizeof(gesture);
+            gesture.header.time = 0;
+            gesture.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+            gesture.header.type = self->trackNotifyStage_ == 0 ? CLAP_EVENT_PARAM_GESTURE_BEGIN
+                                                               : CLAP_EVENT_PARAM_GESTURE_END;
+            gesture.param_id = kTrackParamId;
+            accepted = out->try_push(out, &gesture.header);
+        } else {
+            clap_event_param_value_t value{};
+            value.header.size = sizeof(value);
+            value.header.time = 0;
+            value.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+            value.header.type = CLAP_EVENT_PARAM_VALUE;
+            value.param_id = kTrackParamId;
+            value.value = self->trackNotifyValue_;
+            accepted = out->try_push(out, &value.header);
+        }
+        if (!accepted) {
+            return;  // Queue full or not accepting; try again on the next block or flush.
+        }
+        self->trackNotifyStage_++;
+    }
+    self->trackNotifyStage_ = 0;
 }
 
 void ParamsFlush(const clap_plugin_t *plugin, const clap_input_events_t *in,

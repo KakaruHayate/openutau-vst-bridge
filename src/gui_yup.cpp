@@ -31,9 +31,10 @@ namespace bridge {
 
 namespace {
 
-// Same footprint the Win32 window had; a glance, not an editor panel.
+// Same footprint the Win32 window had; a glance, not an editor panel. Height covers the
+// picker row plus five info rows (12 + 36 + 5 * 28) and the bottom margin.
 constexpr float kWindowWidth = 320.0f;
-constexpr float kWindowHeight = 150.0f;
+constexpr float kWindowHeight = 194.0f;
 
 const char *WindowApi() {
 #if YUP_WINDOWS
@@ -158,7 +159,7 @@ struct EditorState {
         project->setText(current.projectSaved && !current.projectName.empty()
                              ? Utf8("Project: " + current.projectName)
                              : Utf8("Project: (unsaved)"));
-        singer->setText(SingerText(current));
+        singer->setText(Utf8(SingerText(current)));
         tempo->setText(current.hasTempo
                            ? Utf8("Tempo: " +
                                   std::to_string(static_cast<int>(current.tempo + 0.5)) + " BPM")
