@@ -22,6 +22,7 @@
 #include "socket.h"
 #include "timeline.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
@@ -33,6 +34,11 @@
 #include <vector>
 
 namespace bridge {
+
+/// The highest track index the protocol and the plugin's parameter can express. The
+/// picker clamps against this too: OpenUtau may report more tracks than fit, and a
+/// request beyond it would report a parameter value outside the declared 0-63 range.
+constexpr int kMaxTrackNo = 63;
 
 /// What an info window shows about one instance. Copied out wholesale by `UiCopy()` on the
 /// main thread; the numbers come from atomics, the strings from a mutex-guarded block.
@@ -97,7 +103,7 @@ public:
     /// to the host as a parameter change (CLAP: gesture + value + gesture on the output queue).
     /// The pending flag is what keeps a host-side automation and a GUI click from echoing.
     void RequestTrackNo(int trackNo) {
-        trackNo_.store(trackNo);
+        trackNo_.store(std::clamp(trackNo, 0, kMaxTrackNo));
         trackRequestPending_.store(true);
     }
 

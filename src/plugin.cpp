@@ -25,10 +25,10 @@ namespace {
 
 constexpr const char *kPluginId = "moe.kakaru.openutau-bridge";
 
-/// The OpenUtau track this instance plays. A parameter rather than a GUI control: the plugin has
-/// no window of its own, and every host can already show, automate and save a parameter.
+/// The OpenUtau track this instance plays. A parameter as well as a GUI control: every
+/// host can show, automate and save a parameter, and the plugin's own window writes the
+/// same value through it.
 constexpr clap_id kTrackParamId = 0;
-constexpr int kMaxTrackNo = 63;
 
 const char *const kFeatures[] = {
     CLAP_PLUGIN_FEATURE_INSTRUMENT,
@@ -59,6 +59,9 @@ struct Bridge {
     /// and the value it is reporting. See NotifyTrackRequest.
     int trackNotifyStage_ = 0;
     double trackNotifyValue_ = 0.0;
+    /// Set when the host picked a track while a GUI report was mid-flight: the staged
+    /// value is stale, and only the matching gesture-end still owes the sequence.
+    bool trackNotifyCancel_ = false;
     bridge::Session session;
     bridge::InfoWindow *window = nullptr;  // Null where the platform has no gui backend.
 
@@ -68,7 +71,7 @@ struct Bridge {
 };
 
 int ClampTrack(double value) {
-    return std::clamp(static_cast<int>(std::lround(value)), 0, kMaxTrackNo);
+    return std::clamp(static_cast<int>(std::lround(value)), 0, bridge::kMaxTrackNo);
 }
 
 // ------------------------------------------------------------------ audio ports
@@ -107,7 +110,7 @@ bool ParamsGetInfo(const clap_plugin_t *, uint32_t index, clap_param_info_t *inf
     info->id = kTrackParamId;
     info->flags = CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_AUTOMATABLE;
     info->min_value = 0.0;
-    info->max_value = static_cast<double>(kMaxTrackNo);
+    info->max_value = static_cast<double>(bridge::kMaxTrackNo);
     info->default_value = 0.0;
     std::snprintf(info->name, sizeof(info->name), "OpenUtau Track");
     return true;
@@ -163,6 +166,13 @@ void ApplyEvents(Bridge *self, const clap_input_events_t *in) {
         const auto *event = reinterpret_cast<const clap_event_param_value_t *>(header);
         if (event->param_id == kTrackParamId) {
             self->session.SetTrackNo(ClampTrack(event->value));
+            // The host's own pick supersedes any GUI report still in flight: a staged
+            // value from before this event would overwrite the host's newer choice on
+            // the next queue visit. Drop it; only the closing gesture-end is owed.
+            if (self->trackNotifyStage_ != 0) {
+                self->trackNotifyStage_ = 0;
+                self->trackNotifyCancel_ = true;
+            }
         }
     }
 }
@@ -177,10 +187,24 @@ void ApplyEvents(Bridge *self, const clap_input_events_t *in) {
 /// value and how far the three-event sequence got live in the Bridge, and each call
 /// resumes where the last one stopped. The pending flag is only cleared once the queue
 /// took everything; a value picked mid-report simply re-reads at stage 0, so the newest
-/// choice is what the host sees.
+/// choice is what the host sees. If the host picked a track itself mid-report, the staged
+/// value is discarded (see ApplyEvents) and a lone gesture-end closes the interrupted
+/// sequence before any new report may start.
 void NotifyTrackRequest(Bridge *self, const clap_output_events_t *out) {
     if (out == nullptr) {
         return;
+    }
+    if (self->trackNotifyCancel_) {
+        clap_event_param_gesture_t end{};
+        end.header.size = sizeof(end);
+        end.header.time = 0;
+        end.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        end.header.type = CLAP_EVENT_PARAM_GESTURE_END;
+        end.param_id = kTrackParamId;
+        if (out->try_push(out, &end.header)) {
+            self->trackNotifyCancel_ = false;
+        }
+        return;  // Cleared only once the end was taken; retried otherwise.
     }
     if (self->trackNotifyStage_ == 0) {
         if (!self->session.ConsumeTrackRequest()) {

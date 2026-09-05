@@ -1,6 +1,6 @@
 # OpenUtau Bridge 使用说明书
 
-**版本 0.2.0（Alpha）· 适用于协议 v1.1 配套的 OpenUtau 测试版**
+**版本 0.2.0（Alpha）· 适用于协议 v1.2 配套的 OpenUtau 测试版**
 
 本说明书讲的是**日常怎么用**：安装、连接、每天写歌的流程、各个功能在哪、出问题了去哪查。想参与测试反馈的，另见《测试指南》（`TESTING.zh-CN.md`）。
 
@@ -42,7 +42,7 @@ OpenUtau Bridge 是一个**乐器插件**（VST3 / CLAP），装在 DAW 里。�
 **顺序很重要：先 DAW，后 OpenUtau。** 插件得先跑起来才能被找到。
 
 1. 打开 DAW，新建工程；
-2. 新建一条**乐器轨**（不是音频轨），在乐器位插入 **OpenUtau Bridge**（厂商 `KakaruHayate`）；
+2. 新建一条**乐器轨**（不是音频轨），在乐器位插入 **OpenUtau Bridge**（厂商 `OpenUTAU`）；
 3. 打开配套的 OpenUtau 测试版；
 4. 菜单 **Tools → DAW Integration...**；
 5. 列表里应出现你的插件实例（`Status` 为 `Compatible`）。选中 → **Connect**；
