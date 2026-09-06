@@ -1,6 +1,8 @@
 # openutau-vst-bridge
 
-[![CI](https://github.com/KakaruHayate/openutau-vst-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/KakaruHayate/openutau-vst-bridge/actions/workflows/ci.yml)
+[![CI](https://github.com/KakaruHayate/openutau-vst-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/KakaruHayate/openutau-vst-bridge/actions/workflows/ci.yml) [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/KakaruHayate/openutau-vst-bridge) ![Format: VST3 | CLAP](https://img.shields.io/badge/Format-VST3%20%7C%20CLAP-blue)  [![License](https://img.shields.io/github/license/KakaruHayate/openutau-vst-bridge?style=flat&color=blue)](https://github.com/KakaruHayate/openutau-vst-bridge/blob/main/LICENSE)
+
+[![Bridge Target](https://img.shields.io/badge/Target-OpenUtau-green?style=flat)]() [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-informational)]() 
 
 A thin plugin that puts OpenUtau's rendered audio on the DAW timeline. Editing stays in
 the OpenUtau window; the plugin holds the connection, the audio, and the placement.
