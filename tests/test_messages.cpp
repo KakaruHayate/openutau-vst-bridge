@@ -87,7 +87,8 @@ TEST_CASE("a layout entry whose hash is not a decimal integer is refused") {
 TEST_CASE("tracks parse in OpenUtau's own scale") {
     std::vector<TrackInfo> tracks;
     REQUIRE(ParseTracksNotification(
-        "{\"tracks\":[{\"name\":\"Lead\",\"volume\":-3.0,\"pan\":-20.0,\"muted\":false},"
+        "{\"tracks\":[{\"name\":\"Lead\",\"volume\":-3.0,\"pan\":-20.0,\"muted\":false,"
+        "\"singer\":\"Kikyo\",\"engine\":\"DIFFSINGER\"},"
         "{\"name\":\"Harmony\",\"volume\":0.0,\"pan\":15.0,\"muted\":true}]}",
         &tracks));
     REQUIRE(tracks.size() == 2);
@@ -95,6 +96,8 @@ TEST_CASE("tracks parse in OpenUtau's own scale") {
     CHECK(tracks[0].volume == doctest::Approx(-3.0));
     CHECK(tracks[0].pan == doctest::Approx(-20.0));
     CHECK_FALSE(tracks[0].muted);
+    CHECK(tracks[0].singer == "Kikyo");
+    CHECK(tracks[0].engine == "DIFFSINGER");
     CHECK(tracks[1].muted);
 }
 
@@ -106,13 +109,24 @@ TEST_CASE("a track that omits muted is audible") {
     CHECK(tracks[0].volume == doctest::Approx(0.0));
 }
 
+TEST_CASE("v1.2 informational fields default to empty, not to noise") {
+    // A 1.1 peer never sends singer/engine; null must behave like absent, which is what
+    // OpenUtau sends for a track with no singer assigned yet.
+    std::vector<TrackInfo> tracks;
+    REQUIRE(ParseTracksNotification(
+        "{\"tracks\":[{\"name\":\"Lead\",\"singer\":null,\"engine\":null}]}", &tracks));
+    REQUIRE(tracks.size() == 1);
+    CHECK(tracks[0].singer.empty());
+    CHECK(tracks[0].engine.empty());
+}
+
 TEST_CASE("envelopes report success and carry their data") {
     Envelope envelope;
     std::string initResponse = BuildInitResponseEnvelope();
     REQUIRE(ParseEnvelope(initResponse, &envelope));
     CHECK(envelope.success);
     CHECK(envelope.error.empty());
-    CHECK(Contains(initResponse, "\"apiVersion\":\"1.1\""));
+    CHECK(Contains(initResponse, "\"apiVersion\":\"1.2\""));
 
     std::string layoutResponse = BuildPartLayoutResponseEnvelope({"7", "8"});
     REQUIRE(ParseEnvelope(layoutResponse, &envelope));
@@ -147,7 +161,7 @@ TEST_CASE("the discovery file advertises port, name and version") {
     std::string json = BuildDiscoveryJson(52341, "OpenUtau Bridge (Track 1)");
     CHECK(Contains(json, "\"port\":52341"));
     CHECK(Contains(json, "\"name\":\"OpenUtau Bridge (Track 1)\""));
-    CHECK(Contains(json, "\"apiVersion\":\"1.1\""));
+    CHECK(Contains(json, "\"apiVersion\":\"1.2\""));
 }
 
 TEST_CASE("project info parses its name and saved state") {

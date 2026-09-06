@@ -103,6 +103,10 @@ bool ParseTracksNotification(const std::string &json, std::vector<TrackInfo> *tr
         track.pan = ReadNumber(entry, "pan", 0.0);
         // Absent means audible: a minor-older peer that predates the field still mixes.
         track.muted = ReadBool(entry, "muted", false);
+        // v1.2 informational fields; absent or null means "not applicable" (no singer yet /
+        // no usable renderer), which a 1.1 peer simply never sends.
+        track.singer = ReadString(entry, "singer");
+        track.engine = ReadString(entry, "engine");
         tracks->push_back(std::move(track));
     }
     return true;

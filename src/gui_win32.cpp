@@ -1,13 +1,14 @@
 /*
- * The info window's Win32 backend: a small fixed-size window that redraws the session's
- * UiState a few times a second. Everything here runs on the main thread — the CLAP gui
+ * The info window's Win32 backend: a small fixed-size window holding the session's
+ * UiState — plain painted text rows for the info, and one real dropdown-list combobox
+ * for the track picker. Everything here runs on the main thread — the CLAP gui
  * extension's own requirement — and the only cross-thread touch is UiCopy(), which is
  * built for exactly that.
  *
  * The extension's callbacks receive the clap_plugin_t, not the window, so instances live
  * in a registry keyed by the plugin pointer, filled by plugin.cpp around init/destroy.
- * Drawing is deliberately plain: system colors and the stock GUI font, which are what keep
- * the window legible on any theme without a custom look to maintain.
+ * The look is deliberately plain: system colors and the stock GUI font, which are what
+ * keep the window legible on any theme without a custom look to maintain.
  */
 
 #include "gui.h"
@@ -24,6 +25,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <string>
@@ -35,11 +37,14 @@ namespace guiwin {
 
 constexpr wchar_t kClassName[] = L"OpenUtauBridgeInfo";
 constexpr uint32_t kWindowWidth = 320;
-constexpr uint32_t kWindowHeight = 220;
+constexpr uint32_t kWindowHeight = 196;
 constexpr UINT_PTR kTimerId = 1;
 constexpr int kTimerPeriodMs = 250;
 constexpr int kLineHeight = 18;
-constexpr int kTrackRows = 6;
+constexpr int kComboId = 1001;
+// Painted rows end here; the combobox sits just below, with a matching bottom margin.
+constexpr int kComboY = 10 + 6 * kLineHeight + 8;
+constexpr int kComboHeight = 132;  // Closed box plus roughly five visible list entries.
 constexpr DWORD kFloatingStyle = WS_POPUP | WS_CAPTION | WS_SYSMENU;
 
 std::wstring Utf16(const std::string &utf8) {
@@ -54,6 +59,19 @@ std::wstring Utf16(const std::string &utf8) {
     return wide;
 }
 
+/// The dropdown item for a track: "N: name - singer - engine", with the informational
+/// fields simply left out when OpenUtau reports none.
+std::wstring TrackLabel(const TrackInfo &track, int index) {
+    std::wstring label = std::to_wstring(index + 1) + L": " + Utf16(track.name);
+    if (!track.singer.empty()) {
+        label += L"  \x2014  " + Utf16(track.singer);
+    }
+    if (!track.engine.empty()) {
+        label += L"  \x00B7  " + Utf16(track.engine);
+    }
+    return label;
+}
+
 /// One painted line, laid out top to bottom.
 struct Row {
     std::wstring text;
@@ -65,9 +83,12 @@ struct Row {
 /// gui extension guarantees main-thread calls, and the timer fires there too.
 struct WindowState {
     Session *session = nullptr;
+    std::function<void()> onTrackPicked;
     HWND hwnd = nullptr;
+    HWND combo = nullptr;
     bool floating = true;
-    UiState shown;  // What the last paint drew, so an unchanged state skips InvalidateRect.
+    UiState shown;  // What the last paint drew, so an unchanged state skips repaints.
+    std::vector<std::wstring> comboLabels;  // What the dropdown currently lists.
 
     std::vector<Row> Rows() const {
         std::vector<Row> rows;
@@ -108,69 +129,108 @@ struct WindowState {
         transport.color = shown.playing ? accent : strong;
         rows.push_back(transport);
 
-        // The tracks, with this instance's own marked. More than fit are simply not shown:
-        // the window is a glance, not a mixer.
-        for (int y = 0; y < kTrackRows && y < static_cast<int>(shown.trackNames.size()); y++) {
-            Row track;
-            track.text = (y == shown.trackNo ? L"\x25B8 " : L"  ") +
-                         std::to_wstring(y + 1) + L": " + Utf16(shown.trackNames[y]);
-            track.color = y == shown.trackNo ? accent : strong;
-            track.indent = 12;
-            rows.push_back(track);
+        // The routed track's singer and engine, informational only — the dropdown itself
+        // already shows the track names.
+        Row singer;
+        singer.indent = 12;
+        if (shown.trackNo >= 0 && shown.trackNo < static_cast<int>(shown.tracks.size())) {
+            const TrackInfo &track = shown.tracks[static_cast<size_t>(shown.trackNo)];
+            std::wstring who = track.singer.empty() ? L"(none)" : Utf16(track.singer);
+            std::wstring engine = track.engine.empty() ? L"(none)" : Utf16(track.engine);
+            singer.text = L"Track " + std::to_wstring(shown.trackNo + 1) +
+                          L" \x2014 singer: " + who + L" \x00B7 engine: " + engine;
+            singer.color = strong;
+        } else {
+            singer.text = L"No tracks reported yet.";
+            singer.color = weak;
         }
-        if (shown.trackNames.empty()) {
-            Row none;
-            none.text = L"No tracks reported yet.";
-            none.color = weak;
-            none.indent = 12;
-            rows.push_back(none);
-        }
+        rows.push_back(singer);
         return rows;
     }
-
-    void Paint(HDC dc, const RECT &client) {
-        FillRect(dc, &client, reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1));
-        SetBkMode(dc, TRANSPARENT);
-        HGDIOBJ font = SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT));
-
-        RECT row{client.left + 12, client.top + 10, client.right - 12,
-                 client.top + 10 + kLineHeight};
-        for (const Row &line : Rows()) {
-            if (row.top >= client.bottom) {
-                break;
-            }
-            RECT cell = row;
-            cell.left += line.indent;
-            SetTextColor(dc, line.color);
-            DrawTextW(dc, line.text.c_str(), -1, &cell, DT_SINGLELINE | DT_END_ELLIPSIS);
-            row.top += kLineHeight;
-            row.bottom += kLineHeight;
-        }
-        SelectObject(dc, font);
-    }
-
-    void OnTimer() {
-        UiState current = session->UiCopy();
-        bool changed = current.connected != shown.connected || current.port != shown.port ||
-                       current.projectName != shown.projectName ||
-                       current.projectSaved != shown.projectSaved ||
-                       current.trackNames != shown.trackNames ||
-                       current.trackNo != shown.trackNo || current.hasTempo != shown.hasTempo ||
-                       current.playing != shown.playing ||
-                       (current.hasTempo &&
-                        static_cast<int>(current.tempo) != static_cast<int>(shown.tempo));
-        if (changed) {
-            shown = current;
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
-    }
-
-    void ApplyStyle(bool asFloating) {
-        floating = asFloating;
-        SetWindowLongPtrW(hwnd, GWL_STYLE,
-                          asFloating ? kFloatingStyle : (WS_CHILD | WS_VISIBLE));
-    }
 };
+
+namespace {
+
+void Paint(WindowState *state, HDC dc, const RECT &client) {
+    FillRect(dc, &client, reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1));
+    SetBkMode(dc, TRANSPARENT);
+    HGDIOBJ font = SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT));
+
+    RECT row{client.left + 12, client.top + 10, client.right - 12,
+             client.top + 10 + kLineHeight};
+    for (const Row &line : state->Rows()) {
+        if (row.top >= client.bottom) {
+            break;
+        }
+        RECT cell = row;
+        cell.left += line.indent;
+        SetTextColor(dc, line.color);
+        DrawTextW(dc, line.text.c_str(), -1, &cell, DT_SINGLELINE | DT_END_ELLIPSIS);
+        row.top += kLineHeight;
+        row.bottom += kLineHeight;
+    }
+    SelectObject(dc, font);
+}
+
+/// Rebuilds the dropdown when OpenUtau's track list changed, and follows the routed
+/// track's selection. CB_SETCURSEL does not fire CBN_SELCHANGE, so the programmatic
+/// follow cannot echo back as a user pick.
+void SyncTracks(WindowState *state) {
+    std::vector<std::wstring> labels;
+    labels.reserve(state->shown.tracks.size());
+    for (size_t i = 0; i < state->shown.tracks.size(); i++) {
+        labels.push_back(TrackLabel(state->shown.tracks[i], static_cast<int>(i)));
+    }
+
+    if (labels != state->comboLabels) {
+        SendMessageW(state->combo, WM_SETREDRAW, FALSE, 0);
+        SendMessageW(state->combo, CB_RESETCONTENT, 0, 0);
+        for (const std::wstring &label : labels) {
+            SendMessageW(state->combo, CB_ADDSTRING, 0,
+                         reinterpret_cast<LPARAM>(label.c_str()));
+        }
+        SendMessageW(state->combo, WM_SETREDRAW, TRUE, 0);
+        InvalidateRect(state->combo, nullptr, TRUE);
+        state->comboLabels = std::move(labels);
+    }
+
+    int count = static_cast<int>(state->shown.tracks.size());
+    if (count > 0 && state->shown.trackNo >= 0 && state->shown.trackNo < count) {
+        if (SendMessageW(state->combo, CB_GETCURSEL, 0, 0) != state->shown.trackNo) {
+            SendMessageW(state->combo, CB_SETCURSEL, state->shown.trackNo, 0);
+        }
+    } else {
+        SendMessageW(state->combo, CB_SETCURSEL, static_cast<WPARAM>(-1), 0);
+    }
+}
+
+void OnTimer(WindowState *state) {
+    // Unconditional: copy, sync and repaint at 4 Hz. The change-skipping optimization of
+    // the 1.1 window is gone — Windows may discard the redraw surface of an occluded or
+    // minimized window, and a window that only invalidates on change then comes back
+    // showing garbage (the "black after connecting" reports against 1.1). A 4 Hz repaint
+    // of a 320-point window costs nothing and self-heals every such case.
+    state->shown = state->session->UiCopy();
+    SyncTracks(state);
+    InvalidateRect(state->hwnd, nullptr, FALSE);
+}
+
+void ApplyStyle(WindowState *state, bool asFloating) {
+    state->floating = asFloating;
+    SetWindowLongPtrW(state->hwnd, GWL_STYLE,
+                      asFloating ? kFloatingStyle : (WS_CHILD | WS_VISIBLE));
+}
+
+void PlaceCombo(WindowState *state) {
+    RECT client;
+    GetClientRect(state->hwnd, &client);
+    int width = static_cast<int>(client.right) - 24;
+    if (width > 0) {
+        MoveWindow(state->combo, 12, kComboY, width, kComboHeight, TRUE);
+    }
+}
+
+}  // namespace
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
     auto *state = reinterpret_cast<WindowState *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -187,16 +247,46 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) 
             RECT client;
             GetClientRect(hwnd, &client);
             if (state != nullptr) {
-                state->Paint(dc, client);
+                Paint(state, dc, client);
             }
             EndPaint(hwnd, &paint);
             return 0;
         }
+        case WM_PRINTCLIENT:
+            // Hosts may ask the window to draw itself into a DC of their choosing (for
+            // caching or thumbnails). Not answering is how a window turns up black
+            // inside its host.
+            if (state != nullptr) {
+                RECT client;
+                GetClientRect(hwnd, &client);
+                Paint(state, reinterpret_cast<HDC>(wparam), client);
+            }
+            return 0;
         case WM_ERASEBKGND:
             return 1;  // Paint fills the whole client area; erasing too would flicker.
         case WM_TIMER:
             if (state != nullptr && wparam == kTimerId) {
-                state->OnTimer();
+                OnTimer(state);
+            }
+            return 0;
+        case WM_SIZE:
+            if (state != nullptr && state->combo != nullptr) {
+                PlaceCombo(state);
+            }
+            return 0;
+        case WM_COMMAND:
+            // Only the user's pick lands here — CB_SETCURSEL from SyncTracks does not
+            // raise CBN_SELCHANGE, so host-side track changes cannot echo into a request.
+            if (state != nullptr && LOWORD(wparam) == kComboId &&
+                HIWORD(wparam) == CBN_SELCHANGE) {
+                int selection = static_cast<int>(
+                    SendMessageW(state->combo, CB_GETCURSEL, 0, 0));
+                if (selection >= 0) {
+                    state->session->RequestTrackNo(selection);
+                    if (state->onTrackPicked) {
+                        state->onTrackPicked();
+                    }
+                }
             }
             return 0;
         case WM_CLOSE:
@@ -219,7 +309,9 @@ bool EnsureWindowClass() {
     klass.lpfnWndProc = WndProc;
     klass.hInstance = GetModuleHandleW(nullptr);
     klass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    klass.hbrBackground = nullptr;
+    // A real background brush: any region the system erases outside our paint (expose,
+    // resize, DWM discard) must come out as COLOR_WINDOW, never as uninitialized black.
+    klass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     klass.lpszClassName = kClassName;
     registered = RegisterClassExW(&klass) != 0;
     return registered;
@@ -376,7 +468,7 @@ void GuiUnregister(const clap_plugin_t *plugin) {
     Registry().erase(plugin);
 }
 
-InfoWindow *CreateInfoWindow(Session *session) {
+InfoWindow *CreateInfoWindow(Session *session, std::function<void()> onTrackPicked) {
     using guiwin::WindowState;
     if (!guiwin::EnsureWindowClass()) {
         return nullptr;
@@ -384,6 +476,7 @@ InfoWindow *CreateInfoWindow(Session *session) {
     auto *window = new InfoWindow();
     auto *state = new WindowState();
     state->session = session;
+    state->onTrackPicked = std::move(onTrackPicked);
     state->shown = session->UiCopy();
     state->hwnd = CreateWindowExW(
         0, guiwin::kClassName, L"OpenUtau Bridge", guiwin::kFloatingStyle, CW_USEDEFAULT,
@@ -395,6 +488,15 @@ InfoWindow *CreateInfoWindow(Session *session) {
         delete window;
         return nullptr;
     }
+    state->combo = CreateWindowExW(
+        0, L"COMBOBOX", nullptr,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL, 12,
+        guiwin::kComboY, static_cast<int>(guiwin::kWindowWidth) - 24, guiwin::kComboHeight,
+        state->hwnd, reinterpret_cast<HMENU>(static_cast<LONG_PTR>(guiwin::kComboId)),
+        GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(state->combo, WM_SETFONT,
+                 reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+    guiwin::SyncTracks(state);
     window->impl_ = state;
     return window;
 }
@@ -430,6 +532,7 @@ void InfoWindow::Show() {
         }
     }
     state->shown = state->session->UiCopy();
+    guiwin::SyncTracks(state);
     InvalidateRect(state->hwnd, nullptr, FALSE);
     SetTimer(state->hwnd, guiwin::kTimerId, guiwin::kTimerPeriodMs, nullptr);
     ShowWindow(state->hwnd, SW_SHOWNA);
@@ -443,8 +546,9 @@ void InfoWindow::Hide() {
 
 void InfoWindow::EmbedInto(void *parent) {
     auto *state = static_cast<guiwin::WindowState *>(impl_);
-    state->ApplyStyle(false);
+    guiwin::ApplyStyle(state, false);
     SetParent(state->hwnd, static_cast<HWND>(parent));
+    guiwin::PlaceCombo(state);
 }
 
 void InfoWindow::OwnTo(void *owner) {
@@ -455,6 +559,10 @@ void InfoWindow::OwnTo(void *owner) {
 void InfoWindow::Retitle(const char *title) {
     auto *state = static_cast<guiwin::WindowState *>(impl_);
     SetWindowTextW(state->hwnd, guiwin::Utf16(title).c_str());
+}
+
+bool InfoWindow::SetContentScale(float) {
+    return false;  // Physical pixels throughout; see the gui table's set_scale.
 }
 
 }  // namespace bridge

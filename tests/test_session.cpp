@@ -461,3 +461,66 @@ TEST_CASE("A bounce waits for audio a playback would have rendered as silence") 
 
     session.Stop();
 }
+
+TEST_CASE("Track metadata and the picker's request path reach the window") {
+    // v1.2: updateTracks carries singer/engine per track, the window reads them out of
+    // UiCopy, and a pick made in the window changes the routing immediately while leaving
+    // exactly one pending request for the plugin to report to the host.
+    TempDir dir;
+    Session session(dir.path);
+    session.SetHostSampleRate(44100.0);
+    REQUIRE(session.Start());
+    FakeOpenUtau utau;
+    REQUIRE(utau.Connect(session.Port()));
+
+    REQUIRE(utau.Send(bridge::BuildNotificationLine(
+        kind::kUpdateTracks,
+        R"({"tracks":[{"name":"Lead","singer":"Kikyo","engine":"DIFFSINGER"},)"
+        R"({"name":"Harmony"}]})")));
+    REQUIRE(WaitUntil([&session] {
+        bridge::UiState state = session.UiCopy();
+        return state.tracks.size() == 2 && state.tracks[0].singer == "Kikyo" &&
+               state.tracks[0].engine == "DIFFSINGER" && state.tracks[1].singer.empty();
+    }));
+
+    // The host set the track: no pending request may exist, so nothing would be echoed.
+    session.SetTrackNo(1);
+    CHECK_FALSE(session.ConsumeTrackRequest());
+
+    // The picker set the track: the routing follows at once, and the plugin consumes the
+    // request exactly once before it goes quiet again.
+    session.RequestTrackNo(0);
+    CHECK(session.TrackNo() == 0);
+    CHECK(session.ConsumeTrackRequest());
+    CHECK_FALSE(session.ConsumeTrackRequest());
+
+    session.Stop();
+}
+
+TEST_CASE("A host pick supersedes a pending GUI request; a refused report stays armed") {
+    Session session;
+    // No sockets here: the request lifecycle is atomic state, not connection behavior.
+
+    // The regression from review round 2: the window picked, then the host's own
+    // parameter event arrived before the plugin could report. The pending request must
+    // be dropped, not reported as if the picker had chosen the host's value.
+    session.RequestTrackNo(2);
+    CHECK(session.HasTrackRequest());
+    session.ClearTrackRequest();
+    CHECK_FALSE(session.HasTrackRequest());
+    CHECK_FALSE(session.ConsumeTrackRequest());
+    CHECK(session.TrackNo() == 2);  // The routing still followed the last write.
+
+    // The report path may be refused before its first event lands: peeking must not
+    // consume, so the request survives to the next queue visit.
+    session.RequestTrackNo(1);
+    CHECK(session.HasTrackRequest());
+    CHECK(session.HasTrackRequest());
+    CHECK(session.ConsumeTrackRequest());
+    CHECK_FALSE(session.HasTrackRequest());
+
+    // The picker cannot express a track beyond the parameter's declared range.
+    session.RequestTrackNo(999);
+    CHECK(session.TrackNo() == bridge::kMaxTrackNo);
+    CHECK(session.HasTrackRequest());  // The clamped pick still asks to be reported.
+}
