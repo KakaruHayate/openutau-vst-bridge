@@ -7,8 +7,8 @@
  *
  * The extension's callbacks receive the clap_plugin_t, not the window, so instances live
  * in a registry keyed by the plugin pointer, filled by plugin.cpp around init/destroy.
- * The look is deliberately plain: system colors and the stock GUI font, which are what
- * keep the window legible on any theme without a custom look to maintain.
+ * The look is a fixed dark palette: hosts are dark-windowed DAWs, and system colors
+ * would hand us a glaring white panel inside them.
  */
 
 #include "gui.h"
@@ -37,15 +37,28 @@ namespace guiwin {
 
 constexpr wchar_t kClassName[] = L"OpenUtauBridgeInfo";
 constexpr uint32_t kWindowWidth = 320;
-constexpr uint32_t kWindowHeight = 196;
+constexpr uint32_t kWindowHeight = 180;
 constexpr UINT_PTR kTimerId = 1;
 constexpr int kTimerPeriodMs = 250;
 constexpr int kLineHeight = 18;
 constexpr int kComboId = 1001;
-// Painted rows end here; the combobox sits just below, with a matching bottom margin.
-constexpr int kComboY = 10 + 6 * kLineHeight + 8;
-constexpr int kComboHeight = 132;  // Closed box plus roughly five visible list entries.
+constexpr int kComboItemHeight = 20;
+// Painted rows end here (seven of them); the combobox sits just below, with a matching
+// bottom margin.
+constexpr int kComboY = 10 + 7 * kLineHeight + 8;
+constexpr int kComboHeight = 2 * kComboItemHeight + 5 * kComboItemHeight + 10;
 constexpr DWORD kFloatingStyle = WS_POPUP | WS_CAPTION | WS_SYSMENU;
+
+// The dark palette. Hosts are overwhelmingly dark-windowed DAWs, and system colors would
+// hand us a glaring white panel inside them, so the window carries its own colors instead
+// of following the system light/dark setting.
+constexpr COLORREF kBackgroundColor = RGB(32, 32, 32);
+constexpr COLORREF kListBackgroundColor = RGB(24, 24, 24);
+constexpr COLORREF kSelectionColor = RGB(55, 61, 69);
+constexpr COLORREF kBorderColor = RGB(88, 88, 88);
+constexpr COLORREF kTextStrong = RGB(235, 235, 235);
+constexpr COLORREF kTextDim = RGB(165, 165, 165);
+constexpr COLORREF kAccent = RGB(76, 194, 255);  // Fluent dark accent #4CC2FF, ~8:1 on the bg.
 
 std::wstring Utf16(const std::string &utf8) {
     if (utf8.empty()) {
@@ -59,17 +72,10 @@ std::wstring Utf16(const std::string &utf8) {
     return wide;
 }
 
-/// The dropdown item for a track: "N: name - singer - engine", with the informational
-/// fields simply left out when OpenUtau reports none.
+/// The dropdown item for a track: "N: name". Names only — the list has to stay scannable;
+/// the singer and engine of the routed track live in the info rows above.
 std::wstring TrackLabel(const TrackInfo &track, int index) {
-    std::wstring label = std::to_wstring(index + 1) + L": " + Utf16(track.name);
-    if (!track.singer.empty()) {
-        label += L"  \x2014  " + Utf16(track.singer);
-    }
-    if (!track.engine.empty()) {
-        label += L"  \x00B7  " + Utf16(track.engine);
-    }
-    return label;
+    return std::to_wstring(index + 1) + L": " + Utf16(track.name);
 }
 
 /// One painted line, laid out top to bottom.
@@ -89,12 +95,15 @@ struct WindowState {
     bool floating = true;
     UiState shown;  // What the last paint drew, so an unchanged state skips repaints.
     std::vector<std::wstring> comboLabels;  // What the dropdown currently lists.
+    std::wstring title = L"OpenUtau Bridge";  // Reapplied when the window is rebuilt.
+    void *parent = nullptr;  // The host window we are embedded into, if any.
+    void *owner = nullptr;   // The host window we are transient to, if any.
 
     std::vector<Row> Rows() const {
         std::vector<Row> rows;
-        COLORREF strong = GetSysColor(COLOR_WINDOWTEXT);
-        COLORREF weak = GetSysColor(COLOR_GRAYTEXT);
-        COLORREF accent = GetSysColor(COLOR_HIGHLIGHT);
+        COLORREF strong = kTextStrong;
+        COLORREF weak = kTextDim;
+        COLORREF accent = kAccent;
 
         Row title;
         title.text = L"OpenUtau Bridge";
@@ -129,30 +138,80 @@ struct WindowState {
         transport.color = shown.playing ? accent : strong;
         rows.push_back(transport);
 
-        // The routed track's singer and engine, informational only — the dropdown itself
-        // already shows the track names.
+        // The routed track's singer and engine, each on its own row: one long line
+        // truncates as soon as both names are reasonably long.
         Row singer;
         singer.indent = 12;
+        Row engine;
+        engine.indent = 12;
         if (shown.trackNo >= 0 && shown.trackNo < static_cast<int>(shown.tracks.size())) {
             const TrackInfo &track = shown.tracks[static_cast<size_t>(shown.trackNo)];
-            std::wstring who = track.singer.empty() ? L"(none)" : Utf16(track.singer);
-            std::wstring engine = track.engine.empty() ? L"(none)" : Utf16(track.engine);
-            singer.text = L"Track " + std::to_wstring(shown.trackNo + 1) +
-                          L" \x2014 singer: " + who + L" \x00B7 engine: " + engine;
+            singer.text = L"Singer: " +
+                          (track.singer.empty() ? std::wstring(L"(none)") : Utf16(track.singer));
+            engine.text = L"Engine: " +
+                          (track.engine.empty() ? std::wstring(L"(none)") : Utf16(track.engine));
             singer.color = strong;
+            engine.color = strong;
         } else {
             singer.text = L"No tracks reported yet.";
             singer.color = weak;
+            engine.text = L"";
+            engine.color = weak;
         }
         rows.push_back(singer);
+        rows.push_back(engine);
         return rows;
     }
 };
 
 namespace {
 
+void PlaceCombo(WindowState *state);
+
+/// Brushes for the dark palette, built once. Main-thread only, like everything here.
+HBRUSH BackgroundBrush() {
+    static HBRUSH brush = CreateSolidBrush(kBackgroundColor);
+    return brush;
+}
+
+HBRUSH ListBrush() {
+    static HBRUSH brush = CreateSolidBrush(kListBackgroundColor);
+    return brush;
+}
+
+HBRUSH SelectionBrush() {
+    static HBRUSH brush = CreateSolidBrush(kSelectionColor);
+    return brush;
+}
+
+HBRUSH BorderBrush() {
+    static HBRUSH brush = CreateSolidBrush(kBorderColor);
+    return brush;
+}
+
+/// Prefers a dark title bar when DWM supports it (Windows 10 1809+); a silent no-op on
+/// older systems. Loaded dynamically so no dwmapi link dependency is added.
+void PreferDarkCaption(HWND hwnd) {
+    using SetAttributeFn = HRESULT(WINAPI *)(HWND, DWORD, LPCVOID, DWORD);
+    static SetAttributeFn setAttribute = []() -> SetAttributeFn {
+        HMODULE dwm = GetModuleHandleW(L"dwmapi.dll");
+        return dwm != nullptr
+                   ? reinterpret_cast<SetAttributeFn>(
+                         GetProcAddress(dwm, "DwmSetWindowAttribute"))
+                   : nullptr;
+    }();
+    if (setAttribute == nullptr) {
+        return;
+    }
+    BOOL dark = TRUE;
+    // 20 is DWMWA_USE_IMMERSIVE_DARK_MODE on every current build; 19 was its pre-20H1 id.
+    if (FAILED(setAttribute(hwnd, 20, &dark, sizeof(dark)))) {
+        setAttribute(hwnd, 19, &dark, sizeof(dark));
+    }
+}
+
 void Paint(WindowState *state, HDC dc, const RECT &client) {
-    FillRect(dc, &client, reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1));
+    FillRect(dc, &client, BackgroundBrush());
     SetBkMode(dc, TRANSPARENT);
     HGDIOBJ font = SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT));
 
@@ -176,6 +235,13 @@ void Paint(WindowState *state, HDC dc, const RECT &client) {
 /// track's selection. CB_SETCURSEL does not fire CBN_SELCHANGE, so the programmatic
 /// follow cannot echo back as a user pick.
 void SyncTracks(WindowState *state) {
+    // While the list is dropped open, leave it entirely alone: CB_GETCURSEL tracks the
+    // user's hover, so the selection follow below would fight it every 250 ms — the
+    // highlight visibly snapping back while browsing. Rebuilds wait until it closes;
+    // the next tick after the close applies whatever accumulated.
+    if (SendMessageW(state->combo, CB_GETDROPPEDSTATE, 0, 0)) {
+        return;
+    }
     std::vector<std::wstring> labels;
     labels.reserve(state->shown.tracks.size());
     for (size_t i = 0; i < state->shown.tracks.size(); i++) {
@@ -215,10 +281,70 @@ void OnTimer(WindowState *state) {
     InvalidateRect(state->hwnd, nullptr, FALSE);
 }
 
-void ApplyStyle(WindowState *state, bool asFloating) {
-    state->floating = asFloating;
-    SetWindowLongPtrW(state->hwnd, GWL_STYLE,
-                      asFloating ? kFloatingStyle : (WS_CHILD | WS_VISIBLE));
+/// Builds the main window and its combobox from scratch. Used both at creation and when
+/// rebuilding after the host destroyed the window under us (see EnsureNative).
+bool CreateNative(WindowState *state) {
+    state->hwnd = CreateWindowExW(
+        0, kClassName, state->title.c_str(), kFloatingStyle, CW_USEDEFAULT, CW_USEDEFAULT,
+        static_cast<int>(kWindowWidth), static_cast<int>(kWindowHeight), nullptr, nullptr,
+        GetModuleHandleW(nullptr), state);
+    if (state->hwnd == nullptr) {
+        return false;
+    }
+    state->combo = CreateWindowExW(
+        0, L"COMBOBOX", nullptr,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED |
+            CBS_HASSTRINGS | WS_VSCROLL,
+        12, kComboY, static_cast<int>(kWindowWidth) - 24, kComboHeight, state->hwnd,
+        reinterpret_cast<HMENU>(static_cast<LONG_PTR>(kComboId)), GetModuleHandleW(nullptr),
+        nullptr);
+    if (state->combo == nullptr) {
+        DestroyWindow(state->hwnd);
+        state->hwnd = nullptr;
+        return false;
+    }
+    SendMessageW(state->combo, WM_SETFONT,
+                 reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+    SyncTracks(state);
+    return true;
+}
+
+/// Re-applies the embedded form: a child of the host's window, placed at its origin.
+/// The wrapper never positions the window for us (can_resize is false), and SetParent
+/// reinterprets the coordinates the window already had as parent-relative — a window
+/// born at CW_USEDEFAULT screen coordinates can land fully outside the host's client
+/// area, which reads as a black editor. The embed must place it itself.
+void AttachAsChild(WindowState *state) {
+    SetWindowLongPtrW(state->hwnd, GWL_STYLE, WS_CHILD | WS_VISIBLE);
+    SetParent(state->hwnd, static_cast<HWND>(state->parent));
+    SetWindowPos(state->hwnd, nullptr, 0, 0, static_cast<int>(kWindowWidth),
+                 static_cast<int>(kWindowHeight),
+                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    PlaceCombo(state);
+}
+
+/// True when a live native window backs the state, rebuilding it otherwise. Windows
+/// destroys child and owned windows together with their parent, and a host that rebuilds
+/// its UI — editor re-open, theme or layout reload — takes our window down without a
+/// matching gui destroy. Every later call into a dead HWND is a silent no-op, which is
+/// how the editor ends up black and unrecoverable; rebuilding here is the recovery path.
+bool EnsureNative(WindowState *state) {
+    if (state->hwnd != nullptr && IsWindow(state->hwnd)) {
+        return true;
+    }
+    state->hwnd = nullptr;
+    state->combo = nullptr;
+    state->comboLabels.clear();
+    if (!CreateNative(state)) {
+        return false;
+    }
+    if (state->parent != nullptr) {
+        AttachAsChild(state);
+    } else if (state->owner != nullptr) {
+        SetWindowLongPtrW(state->hwnd, GWLP_HWNDPARENT,
+                          reinterpret_cast<LONG_PTR>(state->owner));
+    }
+    return true;
 }
 
 void PlaceCombo(WindowState *state) {
@@ -228,6 +354,35 @@ void PlaceCombo(WindowState *state) {
     if (width > 0) {
         MoveWindow(state->combo, 12, kComboY, width, kComboHeight, TRUE);
     }
+}
+
+/// One owner-drawn combobox entry: the closed box or a list row, on the dark palette.
+/// The system still paints the dropdown arrow button itself; only the item area is ours.
+void DrawComboItem(WindowState *state, const DRAWITEMSTRUCT *item) {
+    HDC dc = item->hDC;
+    RECT rc = item->rcItem;
+    bool closed = (item->itemState & ODS_COMBOBOXEDIT) != 0;
+    bool selected = (item->itemState & ODS_SELECTED) != 0;
+
+    if (closed) {
+        FillRect(dc, &rc, BackgroundBrush());
+        FrameRect(dc, &rc, BorderBrush());
+        InflateRect(&rc, -6, 0);
+        rc.right -= 18;  // Room for the arrow the system draws on top of the border.
+    } else {
+        FillRect(dc, &rc, selected ? SelectionBrush() : ListBrush());
+        InflateRect(&rc, -6, 0);
+    }
+
+    std::wstring text;
+    if (item->itemID < state->comboLabels.size()) {
+        text = state->comboLabels[item->itemID];
+    }
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, (item->itemState & ODS_DISABLED) ? kTextDim : kTextStrong);
+    HGDIOBJ font = SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT));
+    DrawTextW(dc, text.c_str(), -1, &rc, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+    SelectObject(dc, font);
 }
 
 }  // namespace
@@ -264,6 +419,33 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) 
             return 0;
         case WM_ERASEBKGND:
             return 1;  // Paint fills the whole client area; erasing too would flicker.
+        case WM_MEASUREITEM: {
+            // Owner-drawn rows: one comfortable height shared by the list and the box.
+            auto *measure = reinterpret_cast<MEASUREITEMSTRUCT *>(lparam);
+            if (measure != nullptr && wparam == kComboId) {
+                measure->itemHeight = kComboItemHeight;
+                return TRUE;
+            }
+            return DefWindowProcW(hwnd, message, wparam, lparam);
+        }
+        case WM_DRAWITEM: {
+            auto *item = reinterpret_cast<DRAWITEMSTRUCT *>(lparam);
+            if (item != nullptr && wparam == kComboId && item->CtlType == ODT_COMBOBOX &&
+                state != nullptr) {
+                DrawComboItem(state, item);
+                return TRUE;
+            }
+            return DefWindowProcW(hwnd, message, wparam, lparam);
+        }
+        case WM_CTLCOLORLISTBOX:
+            // The dropped list paints itself dark; without this its entries would sit on
+            // a system-white rectangle.
+            return reinterpret_cast<LRESULT>(ListBrush());
+        case WM_CTLCOLORSTATIC:
+            // The closed box's static area between owner-draw passes.
+            SetBkColor(reinterpret_cast<HDC>(wparam), kBackgroundColor);
+            SetTextColor(reinterpret_cast<HDC>(wparam), kTextStrong);
+            return reinterpret_cast<LRESULT>(BackgroundBrush());
         case WM_TIMER:
             if (state != nullptr && wparam == kTimerId) {
                 OnTimer(state);
@@ -287,6 +469,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) 
                         state->onTrackPicked();
                     }
                 }
+            }
+            return 0;
+        case WM_DESTROY:
+            // The window can die out from under us: as a child or an owned window it is
+            // destroyed together with its host-side parent, without a gui destroy call.
+            // Forgetting the handles lets EnsureNative rebuild instead of writing to
+            // dead HWNDs.
+            if (state != nullptr) {
+                state->hwnd = nullptr;
+                state->combo = nullptr;
             }
             return 0;
         case WM_CLOSE:
@@ -367,10 +559,12 @@ const clap_plugin_gui_t &GuiTable() {
             *isFloating = true;
             return true;
         },
-        // create — the window already exists per instance; a host that embeds re-parents it
-        // in set_parent below.
+        // create — the window already exists per instance; a host that embeds re-parents
+        // it in set_parent below. EnsureAlive first: the window may have been destroyed
+        // behind our back since (see EnsureNative).
         +[](const clap_plugin_t *plugin, const char *, bool) {
-            return Instance(plugin) != nullptr;
+            InfoWindow *info = Instance(plugin);
+            return info != nullptr && info->EnsureAlive();
         },
         // destroy — only hides; the window itself dies when the plugin is destroyed.
         +[](const clap_plugin_t *plugin) {
@@ -478,25 +672,11 @@ InfoWindow *CreateInfoWindow(Session *session, std::function<void()> onTrackPick
     state->session = session;
     state->onTrackPicked = std::move(onTrackPicked);
     state->shown = session->UiCopy();
-    state->hwnd = CreateWindowExW(
-        0, guiwin::kClassName, L"OpenUtau Bridge", guiwin::kFloatingStyle, CW_USEDEFAULT,
-        CW_USEDEFAULT, static_cast<int>(guiwin::kWindowWidth),
-        static_cast<int>(guiwin::kWindowHeight), nullptr, nullptr, GetModuleHandleW(nullptr),
-        state);
-    if (state->hwnd == nullptr) {
+    if (!guiwin::CreateNative(state)) {
         delete state;
         delete window;
         return nullptr;
     }
-    state->combo = CreateWindowExW(
-        0, L"COMBOBOX", nullptr,
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL, 12,
-        guiwin::kComboY, static_cast<int>(guiwin::kWindowWidth) - 24, guiwin::kComboHeight,
-        state->hwnd, reinterpret_cast<HMENU>(static_cast<LONG_PTR>(guiwin::kComboId)),
-        GetModuleHandleW(nullptr), nullptr);
-    SendMessageW(state->combo, WM_SETFONT,
-                 reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
-    guiwin::SyncTracks(state);
     window->impl_ = state;
     return window;
 }
@@ -506,7 +686,7 @@ InfoWindow::~InfoWindow() {
     if (state == nullptr) {
         return;
     }
-    if (state->hwnd != nullptr) {
+    if (state->hwnd != nullptr && IsWindow(state->hwnd)) {
         KillTimer(state->hwnd, guiwin::kTimerId);
         DestroyWindow(state->hwnd);
     }
@@ -515,8 +695,15 @@ InfoWindow::~InfoWindow() {
 
 const clap_plugin_gui_t *InfoWindow::Extension() const { return &GuiTable(); }
 
+bool InfoWindow::EnsureAlive() {
+    return guiwin::EnsureNative(static_cast<guiwin::WindowState *>(impl_));
+}
+
 void InfoWindow::Show() {
     auto *state = static_cast<guiwin::WindowState *>(impl_);
+    if (!guiwin::EnsureNative(state)) {
+        return;
+    }
     if (state->floating) {
         // Centered over its owner each time: the host may have moved since the last show.
         RECT area{};
@@ -540,25 +727,60 @@ void InfoWindow::Show() {
 
 void InfoWindow::Hide() {
     auto *state = static_cast<guiwin::WindowState *>(impl_);
+    if (state->hwnd == nullptr || !IsWindow(state->hwnd)) {
+        return;
+    }
     KillTimer(state->hwnd, guiwin::kTimerId);
+    // Detach before hiding: while the editor is closed the window must not remain a
+    // child of (or owned by) host UI that a reload may destroy — otherwise it dies with
+    // it and the next open finds a dead HWND, the black-editor bug. As a plain popup it
+    // simply survives, and the next embed or show reattaches it.
+    if (state->parent != nullptr) {
+        SetWindowLongPtrW(state->hwnd, GWL_STYLE, guiwin::kFloatingStyle);
+        SetParent(state->hwnd, nullptr);
+        SetWindowPos(state->hwnd, nullptr, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+                         SWP_FRAMECHANGED);
+        state->parent = nullptr;
+        state->floating = true;
+    }
+    if (state->owner != nullptr) {
+        SetWindowLongPtrW(state->hwnd, GWLP_HWNDPARENT, 0);
+        state->owner = nullptr;
+    }
     ShowWindow(state->hwnd, SW_HIDE);
 }
 
 void InfoWindow::EmbedInto(void *parent) {
     auto *state = static_cast<guiwin::WindowState *>(impl_);
-    guiwin::ApplyStyle(state, false);
-    SetParent(state->hwnd, static_cast<HWND>(parent));
-    guiwin::PlaceCombo(state);
+    state->parent = parent;
+    state->owner = nullptr;
+    if (!guiwin::EnsureNative(state)) {
+        return;
+    }
+    // A child window cannot keep an owner: clear whatever floating mode left behind.
+    SetWindowLongPtrW(state->hwnd, GWLP_HWNDPARENT, 0);
+    guiwin::AttachAsChild(state);
 }
 
 void InfoWindow::OwnTo(void *owner) {
     auto *state = static_cast<guiwin::WindowState *>(impl_);
+    state->owner = owner;
+    if (!guiwin::EnsureNative(state)) {
+        return;
+    }
     SetWindowLongPtrW(state->hwnd, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(owner));
 }
 
 void InfoWindow::Retitle(const char *title) {
     auto *state = static_cast<guiwin::WindowState *>(impl_);
-    SetWindowTextW(state->hwnd, guiwin::Utf16(title).c_str());
+    if (title != nullptr) {
+        state->title = guiwin::Utf16(title);
+    }
+    if (!guiwin::EnsureNative(state)) {
+        return;
+    }
+    SetWindowTextW(state->hwnd, state->title.c_str());
 }
 
 bool InfoWindow::SetContentScale(float) {
