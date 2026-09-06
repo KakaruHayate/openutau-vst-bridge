@@ -496,3 +496,31 @@ TEST_CASE("Track metadata and the picker's request path reach the window") {
 
     session.Stop();
 }
+
+TEST_CASE("A host pick supersedes a pending GUI request; a refused report stays armed") {
+    Session session;
+    // No sockets here: the request lifecycle is atomic state, not connection behavior.
+
+    // The regression from review round 2: the window picked, then the host's own
+    // parameter event arrived before the plugin could report. The pending request must
+    // be dropped, not reported as if the picker had chosen the host's value.
+    session.RequestTrackNo(2);
+    CHECK(session.HasTrackRequest());
+    session.ClearTrackRequest();
+    CHECK_FALSE(session.HasTrackRequest());
+    CHECK_FALSE(session.ConsumeTrackRequest());
+    CHECK(session.TrackNo() == 2);  // The routing still followed the last write.
+
+    // The report path may be refused before its first event lands: peeking must not
+    // consume, so the request survives to the next queue visit.
+    session.RequestTrackNo(1);
+    CHECK(session.HasTrackRequest());
+    CHECK(session.HasTrackRequest());
+    CHECK(session.ConsumeTrackRequest());
+    CHECK_FALSE(session.HasTrackRequest());
+
+    // The picker cannot express a track beyond the parameter's declared range.
+    session.RequestTrackNo(999);
+    CHECK(session.TrackNo() == bridge::kMaxTrackNo);
+    CHECK(session.HasTrackRequest());  // The clamped pick still asks to be reported.
+}

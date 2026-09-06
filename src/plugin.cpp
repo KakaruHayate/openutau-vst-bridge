@@ -166,9 +166,11 @@ void ApplyEvents(Bridge *self, const clap_input_events_t *in) {
         const auto *event = reinterpret_cast<const clap_event_param_value_t *>(header);
         if (event->param_id == kTrackParamId) {
             self->session.SetTrackNo(ClampTrack(event->value));
-            // The host's own pick supersedes any GUI report still in flight: a staged
-            // value from before this event would overwrite the host's newer choice on
-            // the next queue visit. Drop it; only the closing gesture-end is owed.
+            // The host's own pick supersedes the window's: a request still pending would
+            // re-report the host's own value as if the picker had chosen it, and a report
+            // still in flight would overwrite the host's newer choice with a staged one.
+            // Drop the pending request; an interrupted report owes only its gesture-end.
+            self->session.ClearTrackRequest();
             if (self->trackNotifyStage_ != 0) {
                 self->trackNotifyStage_ = 0;
                 self->trackNotifyCancel_ = true;
@@ -187,9 +189,11 @@ void ApplyEvents(Bridge *self, const clap_input_events_t *in) {
 /// value and how far the three-event sequence got live in the Bridge, and each call
 /// resumes where the last one stopped. The pending flag is only cleared once the queue
 /// took everything; a value picked mid-report simply re-reads at stage 0, so the newest
-/// choice is what the host sees. If the host picked a track itself mid-report, the staged
-/// value is discarded (see ApplyEvents) and a lone gesture-end closes the interrupted
-/// sequence before any new report may start.
+/// choice is what the host sees. The pending request is consumed only once the
+/// gesture-begin was accepted - a queue that refuses the first event leaves the request
+/// armed, so nothing the user picked is ever lost to a full queue. If the host picked a
+/// track itself mid-report, the staged value is discarded (see ApplyEvents) and a lone
+/// gesture-end closes the interrupted sequence before any new report may start.
 void NotifyTrackRequest(Bridge *self, const clap_output_events_t *out) {
     if (out == nullptr) {
         return;
@@ -207,7 +211,9 @@ void NotifyTrackRequest(Bridge *self, const clap_output_events_t *out) {
         return;  // Cleared only once the end was taken; retried otherwise.
     }
     if (self->trackNotifyStage_ == 0) {
-        if (!self->session.ConsumeTrackRequest()) {
+        // Peek, do not consume: a refused begin must leave the request armed, and each
+        // retry re-reads TrackNo so a newer pick supersedes the value read before it.
+        if (!self->session.HasTrackRequest()) {
             return;
         }
         self->trackNotifyValue_ = static_cast<double>(self->session.TrackNo());
@@ -238,6 +244,12 @@ void NotifyTrackRequest(Bridge *self, const clap_output_events_t *out) {
             return;  // Queue full or not accepting; try again on the next block or flush.
         }
         self->trackNotifyStage_++;
+        if (self->trackNotifyStage_ == 1) {
+            // The begin is out; from here the staged state alone drives resumption, so
+            // the pending flag can go. A pick arriving later re-arms it for the next
+            // report, which is exactly what should happen.
+            self->session.ConsumeTrackRequest();
+        }
     }
     self->trackNotifyStage_ = 0;
 }

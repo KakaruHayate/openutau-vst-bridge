@@ -111,6 +111,14 @@ public:
     /// the plugin answers it by notifying the host for the parameter identified below.
     bool ConsumeTrackRequest() { return trackRequestPending_.exchange(false); }
 
+    /// Peek at the pending flag without taking it: the caller may still be refused by the
+    /// host's output queue, and then the request must stay armed for the next visit.
+    bool HasTrackRequest() const { return trackRequestPending_.load(); }
+
+    /// Drop a pending request without reporting it - the host picked a track itself and
+    /// its choice supersedes whatever the window had picked.
+    void ClearTrackRequest() { trackRequestPending_.store(false); }
+
     /// Main thread. Whether the host is rendering faster than real time — a bounce, a freeze, an
     /// export. Audio arrives over a socket while the timeline is being played, which is fine at
     /// real-time speed and not fine at a bounce's, so offline Render() is allowed to wait for
