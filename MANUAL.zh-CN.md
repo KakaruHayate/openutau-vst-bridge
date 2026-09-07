@@ -1,8 +1,8 @@
 # OpenUtau Bridge 使用说明书
 
-**版本 0.2.0（Alpha）· 适用于协议 v1.2 配套的 OpenUtau 测试版**
+**版本 1.0.0 · 适用于带 DAW Integration 功能的 OpenUtau（协议 v1.2，兼容 v1.1 主程序）**
 
-本说明书讲的是**日常怎么用**：安装、连接、每天写歌的流程、各个功能在哪、出问题了去哪查。想参与测试反馈的，另见《测试指南》（`TESTING.zh-CN.md`）。
+本说明书讲的是**日常怎么用**：安装、连接、每天写歌的流程、各个功能在哪、出问题了去哪查。本版的变更内容见《发布说明》（`RELEASE.zh-CN.md`）。
 
 ---
 
@@ -23,7 +23,7 @@ OpenUtau Bridge 是一个**乐器插件**（VST3 / CLAP），装在 DAW 里。�
 
 需要两样东西，且**必须配套**：
 
-1. **OpenUtau 测试版**（带 DAW Integration 功能的那份）——解压到任意目录即可，和你平时的 OpenUtau 互不干扰；
+1. **OpenUtau**（带 DAW Integration 功能的发行版）——解压到任意目录即可，和你平时的 OpenUtau 互不干扰；
 2. **插件**——按下表复制：
 
 | 格式 | Windows | macOS | Linux |
@@ -43,12 +43,23 @@ OpenUtau Bridge 是一个**乐器插件**（VST3 / CLAP），装在 DAW 里。�
 
 1. 打开 DAW，新建工程；
 2. 新建一条**乐器轨**（不是音频轨），在乐器位插入 **OpenUtau Bridge**（厂商 `OpenUTAU`）；
-3. 打开配套的 OpenUtau 测试版；
+3. 打开配套的 OpenUtau；
 4. 菜单 **Tools → DAW Integration...**；
 5. 列表里应出现你的插件实例（`Status` 为 `Compatible`）。选中 → **Connect**；
 6. 状态变成 `Connected to ...` 即成功。
 
 **OpenUtau 工程必须先保存过。** 未保存的工程点 Connect 会收到「请先保存工程」的提示——这是刻意设计：未保存工程没有可靠的音频路径，传出去的内容没法保证。
+
+> 对话框界面目前是英文（OpenUtau 的界面翻译走 Crowdin，这部分还没同步）。对照表：
+>
+> | 界面 | 意思 |
+> |---|---|
+> | Plugin / Port / API / Status | 插件 / 端口 / 协议版本 / 状态 |
+> | Compatible / Incompatible | 版本兼容，可以连 / 版本不兼容，不能连 |
+> | Refresh / Connect / Disconnect | 刷新 / 连接 / 断开 |
+> | No DAW plugin found... | 没找到插件，先在 DAW 里加载插件再刷新 |
+> | Connected to ... / Connected (n) | 已连接（到某实例）/ 已连接 n 个实例 |
+> | Connecting / Reconnecting / Connection lost: ... | 连接中 / 重连中 / 连接断了 |
 
 ## 4. 日常使用
 
@@ -112,13 +123,14 @@ DAW 工程会记住每个实例的 `OpenUtau Track` 设置，但**不保存** Op
 | 现象 | 先检查 |
 |---|---|
 | DAW Integration 列表是空的 | 顺序反了没有（必须先 DAW 后 OpenUtau）；插件真的加载成功了吗；`.vst3` 是否只拷了文件没拷文件夹；点 Refresh |
-| 列表有但连不上 | 防火墙/杀软是否拦了 127.0.0.1 回环；OpenUtau 工程是否保存过 |
+| 列表始终为空 | 打开 `%TEMP%\OpenUtau\PluginServers`（macOS / Linux 为 `/tmp/OpenUtau/PluginServers`），插件加载后这里应有一个 `.json` 文件；没有就是插件侧没起来，看 `bridge-*.log` |
+| 列表有但连不上 | 防火墙/杀软是否拦了 127.0.0.1 回环（可加白名单）；OpenUtau 工程是否保存过 |
 | 连上了没声音 | OpenUtau 里渲染完了吗；DAW 轨是否静音/音量为零；`OpenUtau Track` 指向的轨有音符吗；播放头位置对吗 |
 | 声音出现在错误的时间位置 | DAW 工程采样率改动后重播一次；确认不是 DAW 的「时间起点」设置问题 |
-| 导出是空白 | 确认插件是 0.2.0；导出前先实时播放过一遍让音频传过去 |
+| 导出是空白 | 确认插件是 1.0.0；导出前先实时播放过一遍让音频传过去 |
 | 播一会儿断开 | 带上日志和 DAW 缓冲区设置反馈 |
 
-更系统的排查见《测试指南》末尾的「连不上怎么办」。
+反馈时附上上面的日志文件，问题最容易定位。
 
 ## 6. 明确不支持的
 
@@ -130,4 +142,4 @@ DAW 工程会记住每个实例的 `OpenUtau Track` 设置，但**不保存** Op
 
 ---
 
-*配套文档：`RELEASE.zh-CN.md`（本版预发布说明）、`TESTING.zh-CN.md`（测试清单与反馈格式）、`PROTOCOL.md`（线路协议，英文）。*
+*配套文档：`RELEASE.zh-CN.md`（本版发布说明，英文 `RELEASE.md`）、`PROTOCOL.md`（线路协议，英文）。英文版说明书：`MANUAL.md`。*
