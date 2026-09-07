@@ -22,6 +22,17 @@
 #include <string>
 #include <vector>
 
+namespace cocoagui {
+
+// Window/panel geometry, shared by the panel layout, the floating wrapper, and the
+// CLAP size callbacks so the three can never drift apart again: the host auto-resizes
+// the contentView to the content rect, so a label row laid out beyond the window
+// height is silently clipped (the 160-vs-184 bug this once was).
+constexpr CGFloat kWindowWidth = 320;
+constexpr CGFloat kWindowHeight = 184;
+
+}  // namespace cocoagui
+
 // The dropdown item for a track: "N: name". Names only — the list has to stay scannable;
 // the singer and engine of the routed track live in the info rows above.
 static std::string TrackLabel(const bridge::TrackInfo &track, size_t index) {
@@ -57,7 +68,8 @@ static std::string TrackLabel(const bridge::TrackInfo &track, size_t index) {
 
 - (instancetype)initWithSession:(bridge::Session *)session
                  onTrackPicked:(std::function<void()>)onTrackPicked {
-    self = [super initWithFrame:NSMakeRect(0, 0, 320, 184)];
+    self = [super initWithFrame:NSMakeRect(0, 0, cocoagui::kWindowWidth,
+                                           cocoagui::kWindowHeight)];
     if (self == nil) {
         return self;
     }
@@ -79,12 +91,12 @@ static std::string TrackLabel(const bridge::TrackInfo &track, size_t index) {
     // Rows top to bottom: connection, project, tempo, transport, singer, engine —
     // the same lines the Win32 backend paints, here in real labels.
     CGFloat rowHeight = 22, margin = 12;
-    _connection = makeLabel(NSMakeRect(margin, 184 - margin - rowHeight * 1, 296, rowHeight));
-    _project = makeLabel(NSMakeRect(margin, 184 - margin - rowHeight * 2, 296, rowHeight));
-    _tempo = makeLabel(NSMakeRect(margin, 184 - margin - rowHeight * 3, 296, rowHeight));
-    _transport = makeLabel(NSMakeRect(margin, 184 - margin - rowHeight * 4, 296, rowHeight));
-    _singer = makeLabel(NSMakeRect(margin, 184 - margin - rowHeight * 5, 296, rowHeight));
-    _engine = makeLabel(NSMakeRect(margin, 184 - margin - rowHeight * 6, 296, rowHeight));
+    _connection = makeLabel(NSMakeRect(margin, cocoagui::kWindowHeight - margin - rowHeight * 1, 296, rowHeight));
+    _project = makeLabel(NSMakeRect(margin, cocoagui::kWindowHeight - margin - rowHeight * 2, 296, rowHeight));
+    _tempo = makeLabel(NSMakeRect(margin, cocoagui::kWindowHeight - margin - rowHeight * 3, 296, rowHeight));
+    _transport = makeLabel(NSMakeRect(margin, cocoagui::kWindowHeight - margin - rowHeight * 4, 296, rowHeight));
+    _singer = makeLabel(NSMakeRect(margin, cocoagui::kWindowHeight - margin - rowHeight * 5, 296, rowHeight));
+    _engine = makeLabel(NSMakeRect(margin, cocoagui::kWindowHeight - margin - rowHeight * 6, 296, rowHeight));
 
     _tracks = [[NSPopUpButton alloc]
         initWithFrame:NSMakeRect(margin, margin, 296, 26)
@@ -179,13 +191,17 @@ static std::string TrackLabel(const bridge::TrackInfo &track, size_t index) {
         NSString *engine = track.engine.empty()
             ? @"(none)"
             : [NSString stringWithUTF8String:track.engine.c_str()];
-        _singer.stringValue = [NSString
-            stringWithFormat:@"Track %d \xE2\x80\x94 singer: %@ \xC2\xB7 engine: %@",
-                             current.trackNo + 1, who, engine];
+        // One value per row, matching the Win32 backend: a combined line truncates
+        // as soon as both names get reasonably long.
+        _singer.stringValue = [NSString stringWithFormat:@"Singer: %@", who];
         _singer.textColor = NSColor.labelColor;
+        _engine.stringValue = [NSString stringWithFormat:@"Engine: %@", engine];
+        _engine.textColor = NSColor.labelColor;
     } else {
         _singer.stringValue = @"No tracks reported yet.";
         _singer.textColor = NSColor.secondaryLabelColor;
+        _engine.stringValue = @"";
+        _engine.textColor = NSColor.secondaryLabelColor;
     }
 }
 
@@ -240,8 +256,8 @@ namespace bridge {
 
 namespace cocoagui {
 
-constexpr CGFloat kWindowWidth = 320;
-constexpr CGFloat kWindowHeight = 184;
+// (Geometry constants live at the top of this file, above the panel, so the panel
+// layout and the wrapper share one definition.)
 
 /// The panel plus its floating wrapper. In embedded mode the panel lives in the host's
 /// view and the wrapper is unused; `floatingMode` says which world we are in.
