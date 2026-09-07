@@ -22,17 +22,24 @@
 #include <string>
 #include <vector>
 
-// The dropdown item for a track: "N: name - singer - engine", with the informational
-// fields simply left out when OpenUtau reports none.
+namespace bridge {
+namespace cocoagui {
+
+// Window/panel geometry, shared by the panel layout, the floating wrapper, and the
+// CLAP size callbacks so the three can never drift apart again: the host auto-resizes
+// the contentView to the content rect, so a label row laid out beyond the window
+// height is silently clipped (the 160-vs-184 bug this once was). Declared here, at
+// the top of the file, so the panel below shares the one definition.
+constexpr CGFloat kWindowWidth = 320;
+constexpr CGFloat kWindowHeight = 184;
+
+}  // namespace cocoagui
+}  // namespace bridge
+
+// The dropdown item for a track: "N: name". Names only — the list has to stay scannable;
+// the singer and engine of the routed track live in the info rows above.
 static std::string TrackLabel(const bridge::TrackInfo &track, size_t index) {
-    std::string label = std::to_string(index + 1) + ": " + track.name;
-    if (!track.singer.empty()) {
-        label += "  \xE2\x80\x94  " + track.singer;  // em dash
-    }
-    if (!track.engine.empty()) {
-        label += "  \xC2\xB7  " + track.engine;  // middle dot
-    }
-    return label;
+    return std::to_string(index + 1) + ": " + track.name;
 }
 
 /// The panel: five labels for the info rows and the track picker, plus the refresh
@@ -47,6 +54,7 @@ static std::string TrackLabel(const bridge::TrackInfo &track, size_t index) {
     NSTextField *_tempo;
     NSTextField *_transport;
     NSTextField *_singer;
+    NSTextField *_engine;
     NSPopUpButton *_tracks;
     NSTimer *_timer;
 }
@@ -63,12 +71,16 @@ static std::string TrackLabel(const bridge::TrackInfo &track, size_t index) {
 
 - (instancetype)initWithSession:(bridge::Session *)session
                  onTrackPicked:(std::function<void()>)onTrackPicked {
-    self = [super initWithFrame:NSMakeRect(0, 0, 320, 160)];
+    self = [super initWithFrame:NSMakeRect(0, 0, bridge::cocoagui::kWindowWidth,
+                                           bridge::cocoagui::kWindowHeight)];
     if (self == nil) {
         return self;
     }
     _session = session;
     _onTrackPicked = std::move(onTrackPicked);
+    // Fixed dark appearance: hosts are dark-windowed DAWs, and the adaptive light
+    // appearance would hand us a glaring white panel inside them.
+    self.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
 
     NSFont *font = [NSFont systemFontOfSize:13];
     auto makeLabel = ^(NSRect frame) {
@@ -79,14 +91,15 @@ static std::string TrackLabel(const bridge::TrackInfo &track, size_t index) {
         [self addSubview:label];
         return label;
     };
-    // Rows top to bottom: connection, project, tempo, transport, singer/engine — the
-    // same lines the Win32 backend paints, here in real labels.
+    // Rows top to bottom: connection, project, tempo, transport, singer, engine —
+    // the same lines the Win32 backend paints, here in real labels.
     CGFloat rowHeight = 22, margin = 12;
-    _connection = makeLabel(NSMakeRect(margin, 160 - margin - rowHeight * 1, 296, rowHeight));
-    _project = makeLabel(NSMakeRect(margin, 160 - margin - rowHeight * 2, 296, rowHeight));
-    _tempo = makeLabel(NSMakeRect(margin, 160 - margin - rowHeight * 3, 296, rowHeight));
-    _transport = makeLabel(NSMakeRect(margin, 160 - margin - rowHeight * 4, 296, rowHeight));
-    _singer = makeLabel(NSMakeRect(margin, 160 - margin - rowHeight * 5, 296, rowHeight));
+    _connection = makeLabel(NSMakeRect(margin, bridge::cocoagui::kWindowHeight - margin - rowHeight * 1, 296, rowHeight));
+    _project = makeLabel(NSMakeRect(margin, bridge::cocoagui::kWindowHeight - margin - rowHeight * 2, 296, rowHeight));
+    _tempo = makeLabel(NSMakeRect(margin, bridge::cocoagui::kWindowHeight - margin - rowHeight * 3, 296, rowHeight));
+    _transport = makeLabel(NSMakeRect(margin, bridge::cocoagui::kWindowHeight - margin - rowHeight * 4, 296, rowHeight));
+    _singer = makeLabel(NSMakeRect(margin, bridge::cocoagui::kWindowHeight - margin - rowHeight * 5, 296, rowHeight));
+    _engine = makeLabel(NSMakeRect(margin, bridge::cocoagui::kWindowHeight - margin - rowHeight * 6, 296, rowHeight));
 
     _tracks = [[NSPopUpButton alloc]
         initWithFrame:NSMakeRect(margin, margin, 296, 26)
@@ -181,13 +194,17 @@ static std::string TrackLabel(const bridge::TrackInfo &track, size_t index) {
         NSString *engine = track.engine.empty()
             ? @"(none)"
             : [NSString stringWithUTF8String:track.engine.c_str()];
-        _singer.stringValue = [NSString
-            stringWithFormat:@"Track %d \xE2\x80\x94 singer: %@ \xC2\xB7 engine: %@",
-                             current.trackNo + 1, who, engine];
+        // One value per row, matching the Win32 backend: a combined line truncates
+        // as soon as both names get reasonably long.
+        _singer.stringValue = [NSString stringWithFormat:@"Singer: %@", who];
         _singer.textColor = NSColor.labelColor;
+        _engine.stringValue = [NSString stringWithFormat:@"Engine: %@", engine];
+        _engine.textColor = NSColor.labelColor;
     } else {
         _singer.stringValue = @"No tracks reported yet.";
         _singer.textColor = NSColor.secondaryLabelColor;
+        _engine.stringValue = @"No tracks reported yet.";
+        _engine.textColor = NSColor.secondaryLabelColor;
     }
 }
 
@@ -242,8 +259,8 @@ namespace bridge {
 
 namespace cocoagui {
 
-constexpr CGFloat kWindowWidth = 320;
-constexpr CGFloat kWindowHeight = 160;
+// (Geometry constants live at the top of this file, above the panel, so the panel
+// layout and the wrapper share one definition.)
 
 /// The panel plus its floating wrapper. In embedded mode the panel lives in the host's
 /// view and the wrapper is unused; `floatingMode` says which world we are in.
@@ -417,13 +434,14 @@ InfoWindow *CreateInfoWindow(Session *session, std::function<void()> onTrackPick
     }
 
     state->floating = [[NSWindow alloc]
-        initWithContentRect:NSMakeRect(0, 0, cocoagui::kWindowWidth,
-                                       cocoagui::kWindowHeight)
+        initWithContentRect:NSMakeRect(0, 0, bridge::cocoagui::kWindowWidth,
+                                       bridge::cocoagui::kWindowHeight)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
         backing:NSBackingStoreBuffered
         defer:NO];
     state->floating.title = @"OpenUtau Bridge";
     state->floating.releasedWhenClosed = NO;
+    state->floating.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     state->floating.contentView = state->panel;
 
     auto *window = new InfoWindow();
