@@ -22,16 +22,19 @@
 #include <string>
 #include <vector>
 
+namespace bridge {
 namespace cocoagui {
 
 // Window/panel geometry, shared by the panel layout, the floating wrapper, and the
 // CLAP size callbacks so the three can never drift apart again: the host auto-resizes
 // the contentView to the content rect, so a label row laid out beyond the window
-// height is silently clipped (the 160-vs-184 bug this once was).
+// height is silently clipped (the 160-vs-184 bug this once was). Declared here, at
+// the top of the file, so the panel below shares the one definition.
 constexpr CGFloat kWindowWidth = 320;
 constexpr CGFloat kWindowHeight = 184;
 
 }  // namespace cocoagui
+}  // namespace bridge
 
 // The dropdown item for a track: "N: name". Names only — the list has to stay scannable;
 // the singer and engine of the routed track live in the info rows above.
@@ -68,8 +71,8 @@ static std::string TrackLabel(const bridge::TrackInfo &track, size_t index) {
 
 - (instancetype)initWithSession:(bridge::Session *)session
                  onTrackPicked:(std::function<void()>)onTrackPicked {
-    self = [super initWithFrame:NSMakeRect(0, 0, cocoagui::kWindowWidth,
-                                           cocoagui::kWindowHeight)];
+    self = [super initWithFrame:NSMakeRect(0, 0, bridge::cocoagui::kWindowWidth,
+                                           bridge::cocoagui::kWindowHeight)];
     if (self == nil) {
         return self;
     }
@@ -91,12 +94,12 @@ static std::string TrackLabel(const bridge::TrackInfo &track, size_t index) {
     // Rows top to bottom: connection, project, tempo, transport, singer, engine —
     // the same lines the Win32 backend paints, here in real labels.
     CGFloat rowHeight = 22, margin = 12;
-    _connection = makeLabel(NSMakeRect(margin, cocoagui::kWindowHeight - margin - rowHeight * 1, 296, rowHeight));
-    _project = makeLabel(NSMakeRect(margin, cocoagui::kWindowHeight - margin - rowHeight * 2, 296, rowHeight));
-    _tempo = makeLabel(NSMakeRect(margin, cocoagui::kWindowHeight - margin - rowHeight * 3, 296, rowHeight));
-    _transport = makeLabel(NSMakeRect(margin, cocoagui::kWindowHeight - margin - rowHeight * 4, 296, rowHeight));
-    _singer = makeLabel(NSMakeRect(margin, cocoagui::kWindowHeight - margin - rowHeight * 5, 296, rowHeight));
-    _engine = makeLabel(NSMakeRect(margin, cocoagui::kWindowHeight - margin - rowHeight * 6, 296, rowHeight));
+    _connection = makeLabel(NSMakeRect(margin, bridge::cocoagui::kWindowHeight - margin - rowHeight * 1, 296, rowHeight));
+    _project = makeLabel(NSMakeRect(margin, bridge::cocoagui::kWindowHeight - margin - rowHeight * 2, 296, rowHeight));
+    _tempo = makeLabel(NSMakeRect(margin, bridge::cocoagui::kWindowHeight - margin - rowHeight * 3, 296, rowHeight));
+    _transport = makeLabel(NSMakeRect(margin, bridge::cocoagui::kWindowHeight - margin - rowHeight * 4, 296, rowHeight));
+    _singer = makeLabel(NSMakeRect(margin, bridge::cocoagui::kWindowHeight - margin - rowHeight * 5, 296, rowHeight));
+    _engine = makeLabel(NSMakeRect(margin, bridge::cocoagui::kWindowHeight - margin - rowHeight * 6, 296, rowHeight));
 
     _tracks = [[NSPopUpButton alloc]
         initWithFrame:NSMakeRect(margin, margin, 296, 26)
@@ -431,8 +434,8 @@ InfoWindow *CreateInfoWindow(Session *session, std::function<void()> onTrackPick
     }
 
     state->floating = [[NSWindow alloc]
-        initWithContentRect:NSMakeRect(0, 0, cocoagui::kWindowWidth,
-                                       cocoagui::kWindowHeight)
+        initWithContentRect:NSMakeRect(0, 0, bridge::cocoagui::kWindowWidth,
+                                       bridge::cocoagui::kWindowHeight)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
         backing:NSBackingStoreBuffered
         defer:NO];
