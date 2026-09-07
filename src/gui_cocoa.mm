@@ -203,7 +203,7 @@ static std::string TrackLabel(const bridge::TrackInfo &track, size_t index) {
     } else {
         _singer.stringValue = @"No tracks reported yet.";
         _singer.textColor = NSColor.secondaryLabelColor;
-        _engine.stringValue = @"";
+        _engine.stringValue = @"No tracks reported yet.";
         _engine.textColor = NSColor.secondaryLabelColor;
     }
 }
