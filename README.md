@@ -49,8 +49,9 @@ Pro Tools is out of scope: AAX requires an SDK available only under an Avid agre
 
 ## Documentation
 
-- English: this README, and [`PROTOCOL.md`](PROTOCOL.md) for the wire contract.
-- 中文：[使用说明书](MANUAL.zh-CN.md) · [预发布说明](RELEASE.zh-CN.md) · [测试指南](TESTING.zh-CN.md)
+- English: [User Manual](MANUAL.md) · [Release Notes](RELEASE.md) · this README ·
+  [`PROTOCOL.md`](PROTOCOL.md) for the wire contract.
+- 中文：[使用说明书](MANUAL.zh-CN.md) · [发布说明](RELEASE.zh-CN.md)
 
 ## Licensing
 
