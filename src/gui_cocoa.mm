@@ -241,7 +241,7 @@ namespace bridge {
 namespace cocoagui {
 
 constexpr CGFloat kWindowWidth = 320;
-constexpr CGFloat kWindowHeight = 160;
+constexpr CGFloat kWindowHeight = 184;
 
 /// The panel plus its floating wrapper. In embedded mode the panel lives in the host's
 /// view and the wrapper is unused; `floatingMode` says which world we are in.

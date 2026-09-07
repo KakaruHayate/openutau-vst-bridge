@@ -284,13 +284,17 @@ void OnTimer(WindowState *state) {
 /// Builds the main window and its combobox from scratch. Used both at creation and when
 /// rebuilding after the host destroyed the window under us (see EnsureNative).
 bool CreateNative(WindowState *state) {
+    RECT windowRect{0, 0, static_cast<LONG>(kWindowWidth),
+                    static_cast<LONG>(kWindowHeight)};
+    AdjustWindowRectEx(&windowRect, kFloatingStyle, FALSE, 0);
     state->hwnd = CreateWindowExW(
         0, kClassName, state->title.c_str(), kFloatingStyle, CW_USEDEFAULT, CW_USEDEFAULT,
-        static_cast<int>(kWindowWidth), static_cast<int>(kWindowHeight), nullptr, nullptr,
-        GetModuleHandleW(nullptr), state);
+        windowRect.right - windowRect.left, windowRect.bottom - windowRect.top, nullptr,
+        nullptr, GetModuleHandleW(nullptr), state);
     if (state->hwnd == nullptr) {
         return false;
     }
+    PreferDarkCaption(state->hwnd);
     state->combo = CreateWindowExW(
         0, L"COMBOBOX", nullptr,
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED |
@@ -317,6 +321,7 @@ bool CreateNative(WindowState *state) {
 void AttachAsChild(WindowState *state) {
     SetWindowLongPtrW(state->hwnd, GWL_STYLE, WS_CHILD | WS_VISIBLE);
     SetParent(state->hwnd, static_cast<HWND>(state->parent));
+    state->floating = false;
     SetWindowPos(state->hwnd, nullptr, 0, 0, static_cast<int>(kWindowWidth),
                  static_cast<int>(kWindowHeight),
                  SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
