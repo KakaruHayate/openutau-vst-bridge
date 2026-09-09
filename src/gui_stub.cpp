@@ -1,7 +1,8 @@
 /*
- * The no-gui backend, used when the build disables BRIDGE_ENABLE_GUI. The plugin then
- * advertises no gui extension at all: the window objects still exist so plugin.cpp has
- * one code path, but they hold nothing and answer nothing.
+ * The no-gui backend, used where no native one can be built — a Linux configured
+ * without X11/Xft development files. The plugin then advertises no gui extension at
+ * all: the window objects still exist so plugin.cpp has one code path, but they hold
+ * nothing and answer nothing.
  */
 
 #include "gui.h"
