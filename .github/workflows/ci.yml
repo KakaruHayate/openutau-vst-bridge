@@ -40,13 +40,15 @@ jobs:
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
-        # The VST3 SDK's base library pulls in X11 and friends even for a plugin with no editor.
-        # Ninja comes along because it is what clap-wrapper's own validator target shells out to.
+        # The VST3 SDK's base library pulls in X11 and friends even for a plugin with no
+        # editor, and the bridge's own gui backend needs Xft for the UTF-8 text.
+        # Ninja comes along because it is what clap-wrapper's own validator target
+        # shells out to.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            ninja-build \
-            libx11-dev libxcb1-dev libxcb-util-dev libxcb-cursor-dev \
+            ninja-build pkg-config \
+            libx11-dev libxft-dev libxcb1-dev libxcb-util-dev libxcb-cursor-dev \
             libxcb-keysyms1-dev libxcb-xkb-dev libxcb-shm0-dev \
             libxcb-icccm4-dev libxcb-xinerama0-dev \
             libxkbcommon-dev libxkbcommon-x11-dev \

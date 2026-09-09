@@ -86,11 +86,13 @@ if (WIN32)
     target_link_libraries(${PROJECT_NAME}-impl PUBLIC ws2_32)
 endif()
 
-# The plugin window: native controls per platform — Win32 common controls, AppKit — and
-# a no-op stub where no native backend exists (Linux), which leaves the plugin without a
-# gui extension: a degraded but working plugin whose track is still switchable from the
-# host's own parameter UI. No toolkit dependency anywhere: a window of five labels and
-# one dropdown is not worth a UI framework's build time, binary size or crash surface.
+# The plugin window: native controls per platform — Win32 common controls, AppKit, and
+# on Linux plain Xlib with an Xft-drawn dropdown. No toolkit dependency anywhere: a
+# window of five labels and one dropdown is not worth a UI framework's build time,
+# binary size or crash surface. Where no native backend can be built (a headless or
+# Wayland-only Linux without X11/Xft dev files) the no-op stub stands in, which leaves
+# the plugin without a gui extension: a degraded but working plugin whose track is
+# still switchable from the host's own parameter UI.
 if (WIN32)
     target_sources(${PROJECT_NAME}-impl PRIVATE src/gui_win32.cpp)
     target_link_libraries(${PROJECT_NAME}-impl PRIVATE user32 gdi32)
@@ -100,7 +102,27 @@ elseif (APPLE)
     # The panel is plain AppKit under ARC; the project's own C++ never touches ObjC.
     set_source_files_properties(src/gui_cocoa.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
 else ()
-    target_sources(${PROJECT_NAME}-impl PRIVATE src/gui_stub.cpp)
+    find_package(X11 QUIET)
+    set(bridge_have_x11_gui FALSE)
+    if (X11_FOUND)
+        # Xft (and its fontconfig/freetype requirements) only through pkg-config, the
+        # one channel that carries its transitive link dependencies.
+        find_package(PkgConfig QUIET)
+        if (PKG_CONFIG_FOUND)
+            pkg_check_modules(XFT QUIET xft)
+            if (XFT_FOUND)
+                set(bridge_have_x11_gui TRUE)
+            endif ()
+        endif ()
+    endif ()
+    if (bridge_have_x11_gui)
+        target_sources(${PROJECT_NAME}-impl PRIVATE src/gui_x11.cpp)
+        target_link_libraries(${PROJECT_NAME}-impl PRIVATE X11::X11 ${XFT_LIBRARIES})
+        target_include_directories(${PROJECT_NAME}-impl PRIVATE ${XFT_INCLUDE_DIRS})
+    else ()
+        target_sources(${PROJECT_NAME}-impl PRIVATE src/gui_stub.cpp)
+        message(STATUS "X11/Xft development files not found - building without a gui backend")
+    endif ()
 endif ()
 
 make_clapfirst_plugins(

@@ -5,9 +5,10 @@
  * connection state, tempo, transport, and per-track singer/engine. CLAP's gui extension
  * is the surface; the controls are the platform's own (Win32 common controls, AppKit),
  * because a window of five labels and one dropdown is not worth a UI framework's
- * dependency, build time or crash surface. A stub backend stands in on platforms without
- * a native backend (Linux), and then the plugin simply advertises no gui — a degraded
- * but working plugin whose track is still switchable from the host's own parameter UI.
+ * dependency, build time or crash surface. A stub backend stands in where no native
+ * backend can be built (a Linux without X11/Xft dev files), and then the plugin simply
+ * advertises no gui — a degraded but working plugin whose track is still switchable
+ * from the host's own parameter UI.
  */
 
 #include <clap/clap.h>
