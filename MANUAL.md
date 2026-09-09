@@ -49,6 +49,20 @@ You need two things, and they **must come as a pair**:
 After installing, **rescan plugins** in your DAW. If Gatekeeper blocks the plugin on macOS
 the first time, right-click → Open, or allow it in System Settings.
 
+> **macOS signing note**: the plugin is ad-hoc signed (the project has no paid Apple
+> developer certificate). If your DAW (Cubase in particular) reports "The VST signature
+> is invalid" or the plugin fails to scan, run these two commands in Terminal, then
+> restart the DAW and rescan:
+>
+> ```bash
+> xattr -cr "/Library/Audio/Plug-Ins/VST3/OpenUtau Bridge.vst3"
+> codesign --force --deep --sign - "/Library/Audio/Plug-Ins/VST3/OpenUtau Bridge.vst3"
+> ```
+>
+> Same for the CLAP build (path `.../CLAP/OpenUtau Bridge.clap`, `codesign` without
+> `--deep`). If you installed to the user folders (`~/Library/...`), adjust the paths
+> accordingly.
+
 ## 3. First connection
 
 **Order matters: DAW first, OpenUtau second.** The plugin must be running before

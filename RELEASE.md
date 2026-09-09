@@ -85,6 +85,12 @@ Every platform ships the same set:
   reconnect OpenUtau once.
 - **No MIDI input.** Notes are written in OpenUtau only.
 - Logic Pro / GarageBand on macOS most likely will not scan the plugin (sandboxing).
+- **The macOS plugin is ad-hoc signed** (no paid developer certificate): on Apple silicon,
+  if your DAW (e.g. Cubase 15) reports "The VST signature is invalid", clear the
+  quarantine flag and re-sign locally with the two commands in the User Manual §2;
+  Logic/GarageBand will likely refuse even after re-signing, due to sandboxing. A fully
+  transparent distribution would additionally need Developer ID signing + notarization
+  (Apple Developer Program).
 
 ## Quality verification
 

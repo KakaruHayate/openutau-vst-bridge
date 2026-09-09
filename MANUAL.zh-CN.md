@@ -37,6 +37,15 @@ OpenUtau Bridge 是一个**乐器插件**（VST3 / CLAP），装在 DAW 里。�
 
 装完在 DAW 里**重新扫描插件**。macOS 首次加载若被 Gatekeeper 拦，右键 → 打开，或在系统设置里点「仍要打开」。
 
+> **macOS 签名说明**：插件使用 ad-hoc 签名（项目没有付费的 Apple 开发者证书）。如果 DAW（尤其 Cubase）报「签名无效」（The VST signature is invalid）或扫描不到，在终端执行下面两步后再重启 DAW、重新扫描：
+>
+> ```bash
+> xattr -cr "/Library/Audio/Plug-Ins/VST3/OpenUtau Bridge.vst3"
+> codesign --force --deep --sign - "/Library/Audio/Plug-Ins/VST3/OpenUtau Bridge.vst3"
+> ```
+>
+> CLAP 版同理（路径换成 `.../CLAP/OpenUtau Bridge.clap`，`codesign` 命令去掉 `--deep`）。安装到用户目录（`~/Library/...`）时上面命令里的路径也要相应替换。
+
 ## 3. 第一次连接
 
 **顺序很重要：先 DAW，后 OpenUtau。** 插件得先跑起来才能被找到。

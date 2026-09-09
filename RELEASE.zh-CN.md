@@ -51,6 +51,7 @@ OpenUtau Bridge 的第一个正式版。写给直接使用它的人；安装与�
 - **DAW 工程不保存 OpenUtau 内容。** 重开 DAW 工程后要重新连一次 OpenUtau。
 - **不接受 MIDI 输入。** 音符只能在 OpenUtau 里写。
 - macOS 的 Logic Pro / GarageBand 大概率扫不到插件（沙箱限制）。
+- **macOS 插件为 ad-hoc 签名**（项目没有付费开发者证书）：Apple 芯片上若 DAW（如 Cubase 15）报「The VST signature is invalid」，按《使用说明书》第 2 节的两条命令清除隔离属性并本地重签即可加载；Logic/GarageBand 因沙箱即使重签也大概率不行。彻底解决需要 Developer ID 签名 + 公证（Apple 开发者计划）。
 
 ## 质量验证
 
