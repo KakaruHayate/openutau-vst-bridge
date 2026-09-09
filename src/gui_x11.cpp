@@ -106,14 +106,18 @@ struct WindowState {
     UiState shown;  // What the last paint drew, so an unchanged state costs one copy.
     std::vector<std::string> comboLabels;  // What the dropdown currently lists.
     std::string title = "OpenUtau Bridge";
-    Window parent = 0;  // The host window we are embedded into, if any.
-    Window owner = 0;   // The host window we are transient to, if any.
-    bool floating = true;
     Atom deleteAtom = 0;  // WM_DELETE_WINDOW: the floating window's close box.
 
     // The event thread below: started once the window exists, joined at destruction.
-    bool running = false;
+    // Atomic because the destructor stops it from the main thread; parent/owner/floating
+    // are atomic for the same reason — the main thread writes them in EmbedInto/OwnTo
+    // while the event thread reads and clears them in HideWindow (the floating window's
+    // close box can race the host's hide()).
+    std::atomic<bool> running{false};
     std::thread eventThread;
+    std::atomic<Window> parent{0};  // The host window we are embedded into, if any.
+    std::atomic<Window> owner{0};   // The host window we are transient to, if any.
+    std::atomic<bool> floating{true};
 
     // The popup's world. popupMutex guards popupOpen and the popup's map/unmap
     // transitions, because Hide() arrives on the main thread while the event thread may
@@ -613,17 +617,24 @@ bool CreateNative(WindowState *state) {
     }
     if (state->gc == nullptr || state->draw == nullptr || state->popup == 0 ||
         state->popupDraw == nullptr) {
-        // Nothing has been mapped yet: tear the X-side down and report no gui.
+        // Nothing has been mapped yet: tear the X-side down and report no gui. The
+        // draws go before their windows — see the destructor for the ordering rule.
+        if (state->popupDraw != nullptr) {
+            XftDrawDestroy(state->popupDraw);
+        }
+        if (state->draw != nullptr) {
+            XftDrawDestroy(state->draw);
+        }
         if (state->popup != 0) {
             XDestroyWindow(display, state->popup);
         }
         XDestroyWindow(display, state->window);
-        if (state->popupDraw != nullptr) {
-            XftDrawDestroy(state->popupDraw);
+        if (state->gc != nullptr) {
+            XFreeGC(display, state->gc);
         }
-        XftDrawDestroy(state->draw);
-        XFreeGC(display, state->gc);
-        XftFontClose(display, state->font);
+        if (state->font != nullptr) {
+            XftFontClose(display, state->font);
+        }
         XCloseDisplay(display);
         state->display = nullptr;
         state->window = 0;
@@ -829,17 +840,20 @@ InfoWindow::~InfoWindow() {
     Display *display = state->display;
     if (display != nullptr) {
         x11gui::ClosePopup(state);
-        if (state->popup != 0) {
-            XDestroyWindow(display, state->popup);
-        }
-        if (state->window != 0) {
-            XDestroyWindow(display, state->window);
-        }
+        // Free the draws before their windows: an XftDraw wraps a Render picture tied
+        // to the drawable, and freeing a picture the server already released with its
+        // window raises a BadPicture error, whose default handler ends the process.
         if (state->popupDraw != nullptr) {
             XftDrawDestroy(state->popupDraw);
         }
         if (state->draw != nullptr) {
             XftDrawDestroy(state->draw);
+        }
+        if (state->popup != 0) {
+            XDestroyWindow(display, state->popup);
+        }
+        if (state->window != 0) {
+            XDestroyWindow(display, state->window);
         }
         if (state->gc != nullptr) {
             XFreeGC(display, state->gc);
