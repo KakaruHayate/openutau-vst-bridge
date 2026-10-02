@@ -9,7 +9,7 @@ if (APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 endif()
 
-project(openutau-vst-bridge VERSION 0.1.0 LANGUAGES C CXX)
+project(openutau-vst-bridge VERSION 1.0.1 LANGUAGES C CXX)
 
 if (APPLE)
     # clap-wrapper's macOS path attaches Objective-C++ sources to the format modules, and those

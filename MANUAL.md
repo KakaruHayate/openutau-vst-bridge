@@ -1,6 +1,6 @@
 # OpenUtau Bridge User Manual
 
-**Version 1.0.0 · For OpenUtau builds with DAW Integration (protocol v1.2, compatible with v1.1 hosts)**
+**Version 1.0.1 · For OpenUtau builds with DAW Integration (protocol v1.2, compatible with v1.1 hosts)**
 
 This manual covers **day-to-day use**: installation, connecting, the everyday workflow,
 where each feature lives, and what to check when something goes wrong. For what changed
@@ -173,7 +173,7 @@ project, and **Connect** once more in DAW Integration.
 | Listed but will not connect | Firewall / antivirus blocking 127.0.0.1 loopback (whitelist it); has the OpenUtau project been saved |
 | Connected but silent | Has the render finished in OpenUtau; is the DAW track muted / at zero volume; does the track pointed to by `OpenUtau Track` have notes; is the playhead where you expect |
 | Sound at the wrong position | Replay once after changing the DAW project's sample rate; rule out the DAW's own "project start" settings |
-| Export is silent | Make sure the plugin is 1.0.0; play through once in real time before exporting so audio gets delivered |
+| Export is silent | Make sure the plugin is 1.0.0 or newer; play through once in real time before exporting so audio gets delivered |
 | Disconnects after a while | Report with the logs and the DAW's buffer settings |
 
 Attaching the log files above makes issues much easier to diagnose.

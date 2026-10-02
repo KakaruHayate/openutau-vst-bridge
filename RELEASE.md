@@ -1,6 +1,15 @@
 # OpenUtau Bridge Release Notes
 
-**Version 1.0.0 · Protocol v1.2 · 2026-09-07**
+**Version 1.0.1 · Protocol v1.2 · 2026-10-02**
+
+1.0.1 is 1.0.0 with the plug-in icon. The VST3 and CLAP modules now carry the same
+puzzle-piece artwork OpenUTAU-FX uses, on Windows and macOS, so the two plug-ins read as
+one family in a host's plug-in browser. Nothing else changed: the protocol, the audio path
+and every behaviour are 1.0.0's, and its notes below still describe what ships.
+
+---
+
+## 1.0.0 · 2026-09-07
 
 The first stable release of OpenUtau Bridge. Written for people using it directly; for
 installation and everyday use see the User Manual (`MANUAL.md`, Chinese
