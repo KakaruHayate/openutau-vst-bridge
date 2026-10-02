@@ -124,9 +124,11 @@ jobs:
           import sys, zipfile
           names = zipfile.ZipFile(sys.argv[1]).namelist()
           print('\n'.join(names))
+          # The installer enumerates the whole tree, so a bundle only has to appear as a path
+          # segment anywhere: Windows nests it under VST3/, the other platforms put it at the root.
+          segments = {p for n in names for p in n.split('/')}
           for bundle in ('OpenUtau Bridge.vst3', 'OpenUtau Bridge.clap'):
-              assert any(n == bundle or n.startswith(bundle + '/') for n in names), \
-                  'missing from the archive: ' + bundle
+              assert bundle in segments, 'missing from the archive: ' + bundle
           PY
 
       - uses: actions/upload-artifact@v4
