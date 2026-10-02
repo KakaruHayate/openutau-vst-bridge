@@ -1,0 +1,9 @@
+// Win32 resources for the bridge plug-ins. The icon is what Explorer and a
+// host's plug-in browser show for the built .vst3 and .clap modules.
+//
+// Compiled into each module target by CMakeLists.txt, which also puts this
+// directory on the resource compiler's include path so the relative .ico below
+// resolves.
+#define IDI_ICON1 101
+
+IDI_ICON1 ICON "OpenUtauBridge.ico"

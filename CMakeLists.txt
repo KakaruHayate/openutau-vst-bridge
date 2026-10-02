@@ -147,6 +147,40 @@ make_clapfirst_plugins(
         ASSET_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/assets
 )
 
+# The plug-in icon, shared with OpenUTAU-FX. On Windows it is a Win32 resource
+# compiled straight into each module, which is the icon Explorer and a host's
+# plug-in browser show for the .vst3 and .clap; on macOS the bundle carries the
+# .icns and its Info.plist names it.
+set(BRIDGE_RESOURCES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/resources)
+set(BRIDGE_MODULE_TARGETS ${PROJECT_NAME}_clap ${PROJECT_NAME}_vst3)
+
+if (WIN32)
+    set(BRIDGE_RC ${BRIDGE_RESOURCES_DIR}/main.rc)
+    set_source_files_properties(${BRIDGE_RC} PROPERTIES
+            COMPILE_FLAGS "/I\"${BRIDGE_RESOURCES_DIR}\"")
+    foreach (bridge_target IN LISTS BRIDGE_MODULE_TARGETS)
+        if (TARGET ${bridge_target})
+            target_sources(${bridge_target} PRIVATE ${BRIDGE_RC})
+        endif ()
+    endforeach ()
+endif ()
+
+if (APPLE)
+    foreach (bridge_target IN LISTS BRIDGE_MODULE_TARGETS)
+        if (TARGET ${bridge_target})
+            set_target_properties(${bridge_target} PROPERTIES
+                    MACOSX_BUNDLE_ICON_FILE "OpenUtauBridge.icns")
+            add_custom_command(TARGET ${bridge_target} POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E make_directory
+                            "$<TARGET_BUNDLE_DIR:${bridge_target}>/Contents/Resources"
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                            "${BRIDGE_RESOURCES_DIR}/OpenUtauBridge.icns"
+                            "$<TARGET_BUNDLE_DIR:${bridge_target}>/Contents/Resources/OpenUtauBridge.icns"
+                    VERBATIM)
+        endif ()
+    endforeach ()
+endif ()
+
 # Installing into the per-user plug-in folders, which is where a host looks and which needs no
 # administrator rights — unlike the machine-wide ones under Program Files. Windows only: the
 # other platforms' paths are known but have never been built here, so they are not guessed at.
