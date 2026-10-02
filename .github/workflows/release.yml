@@ -1,0 +1,173 @@
+name: Release
+
+# Cuts a release from a version tag (this repository tags plain versions: 0.2.0, 1.0.0).
+#
+# The three asset names below are a contract rather than a label. OpenUtau's DAW
+# Integration dialog downloads
+#   https://github.com/KakaruHayate/openutau-vst-bridge/releases/latest/download/plugins-<os>-latest.zip
+# - GitHub's permanent latest-release redirect, so it always takes the newest non-draft,
+# non-prerelease release - and then looks for a bundle named "OpenUtau Bridge.vst3" /
+# "OpenUtau Bridge.clap" anywhere under the archive root. Renaming an asset or a bundle, or
+# publishing as a pre-release, silently changes or breaks the one-click install for every
+# user, so the packaging steps reproduce the layout 1.0.0 shipped and the checks below fail
+# the run when they drift.
+on:
+  push:
+    tags: [ '*' ]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (must already exist)'
+        required: true
+
+permissions:
+  contents: write
+
+# Unlike CI, a release is never superseded: let it finish rather than cancel it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-latest
+            archive: plugins-windows-latest.zip
+          - name: macOS arm64
+            os: macos-latest
+            archive: plugins-macos-latest.zip
+          - name: Linux x64
+            os: ubuntu-latest
+            archive: plugins-ubuntu-latest.zip
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # clap, clap-wrapper, r8brain and xxHash are submodules, and clap-wrapper carries its
+          # own vendored CPM for resolving the VST3 SDK.
+          submodules: recursive
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config \
+            libx11-dev libxft-dev libxcb1-dev libxcb-util-dev libxcb-cursor-dev \
+            libxcb-keysyms1-dev libxcb-xkb-dev libxcb-shm0-dev \
+            libxcb-icccm4-dev libxcb-xinerama0-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig1-dev libfreetype6-dev libcairo2-dev \
+            libgtkmm-3.0-dev libsqlite3-dev
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --target openutau-vst-bridge_all bridge-tests
+
+      - name: Test
+        # The suite opens real loopback sockets and writes real discovery files, so a green run
+        # here means the protocol works on this platform rather than only that it compiled.
+        # Verbose because ctest sees one test: without it, doctest's own count of what actually
+        # ran on this platform never reaches the log.
+        run: ctest --test-dir build --build-config Release --output-on-failure --verbose
+
+      # ── Packaging ─────────────────────────────────────────────────────────────────────
+      # 1.0.0 layout, per platform, reproduced exactly:
+      #   Windows  CLAP/Release/OpenUtau Bridge.clap  +  VST3/OpenUtau Bridge.vst3/...
+      #   macOS    OpenUtau Bridge.clap/  +  OpenUtau Bridge.vst3/   (both at the root)
+      #   Linux    OpenUtau Bridge.clap   +  OpenUtau Bridge.vst3/...
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path 'build/assets/CLAP', 'build/assets/VST3' `
+                           -DestinationPath "dist/${{ matrix.archive }}" -Force
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -e
+          rm -rf stage
+          mkdir -p stage dist
+          cp -R "build/assets/OpenUtau Bridge.clap" "build/assets/OpenUtau Bridge.vst3" stage/
+          # ditto keeps the bundle structure and its metadata. Without --keepParent the bundles
+          # land at the archive root, which is where the installer searches for them.
+          ditto -c -k --sequesterRsrc stage "dist/${{ matrix.archive }}"
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -e
+          mkdir -p dist
+          cd build/assets
+          zip -r "$GITHUB_WORKSPACE/dist/${{ matrix.archive }}" \
+            "OpenUtau Bridge.clap" "OpenUtau Bridge.vst3"
+
+      - name: Check the archive holds the bundles OpenUtau looks for
+        shell: bash
+        run: |
+          set -e
+          PY=$(command -v python3 || command -v python)
+          "$PY" - "dist/${{ matrix.archive }}" <<'PY'
+          import sys, zipfile
+          names = zipfile.ZipFile(sys.argv[1]).namelist()
+          print('\n'.join(names))
+          for bundle in ('OpenUtau Bridge.vst3', 'OpenUtau Bridge.clap'):
+              assert any(n == bundle or n.startswith(bundle + '/') for n in names), \
+                  'missing from the archive: ' + bundle
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: dist/${{ matrix.archive }}
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the archives
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Check the asset names are the ones OpenUtau requests
+        run: |
+          set -e
+          ls -la dist
+          for a in plugins-windows-latest.zip plugins-macos-latest.zip plugins-ubuntu-latest.zip; do
+            test -f "dist/$a" || { echo "missing dist/$a"; exit 1; }
+          done
+          test "$(ls dist | wc -l)" -eq 3 || { echo "unexpected extra assets: $(ls dist)"; exit 1; }
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -e
+          # No --prerelease and no --draft: releases/latest must resolve to this tag, or
+          # OpenUtau's installer keeps downloading the previous build.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" dist/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "OpenUtau Bridge $TAG" \
+              --generate-notes
+          fi
