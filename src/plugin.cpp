@@ -96,6 +96,32 @@ bool AudioPortsGet(const clap_plugin_t *, uint32_t index, bool isInput,
 
 const clap_plugin_audio_ports_t kAudioPorts = {AudioPortsCount, AudioPortsGet};
 
+// ------------------------------------------------------------------ note ports
+
+// The bridge never reads notes; the timeline comes from OpenUtau. This input port exists only
+// because clap-wrapper turns CLAP note ports into VST3 event buses, and Ableton Live refuses to
+// open a VST3 instrument ("This VST3 plug-in could not be opened") that has no event input bus.
+// REAPER and Bitwig accept such an instrument, which is why the problem was Live-specific.
+// Any events the host sends on this port are ignored by Process.
+
+uint32_t NotePortsCount(const clap_plugin_t *, bool isInput) {
+    return isInput ? 1u : 0u;
+}
+
+bool NotePortsGet(const clap_plugin_t *, uint32_t index, bool isInput,
+                  clap_note_port_info_t *info) {
+    if (!isInput || index != 0) {
+        return false;
+    }
+    info->id = 0;
+    info->supported_dialects = CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI;
+    info->preferred_dialect = CLAP_NOTE_DIALECT_MIDI;
+    std::snprintf(info->name, sizeof(info->name), "MIDI In");
+    return true;
+}
+
+const clap_plugin_note_ports_t kNotePorts = {NotePortsCount, NotePortsGet};
+
 // ---------------------------------------------------------------------- params
 
 uint32_t ParamsCount(const clap_plugin_t *) {
@@ -450,6 +476,9 @@ clap_process_status PluginProcess(const clap_plugin_t *plugin, const clap_proces
 const void *PluginGetExtension(const clap_plugin_t *plugin, const char *id) {
     if (std::strcmp(id, CLAP_EXT_AUDIO_PORTS) == 0) {
         return &kAudioPorts;
+    }
+    if (std::strcmp(id, CLAP_EXT_NOTE_PORTS) == 0) {
+        return &kNotePorts;
     }
     if (std::strcmp(id, CLAP_EXT_PARAMS) == 0) {
         return &kParams;
