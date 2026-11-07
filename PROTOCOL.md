@@ -209,7 +209,17 @@ audio 13507256038857166760 3528000\n<3528000 raw bytes>
 { "bpm": 137.5 }
 ```
 
-- The DAW project's tempo, sent when it changes. Without ARA there is no tempo-map sync (§1): OpenUtau uses this only as a guard — warning the user once per distinct mismatch, with a **±0.5 BPM** tolerance, that bars will misalign — never to retempo-map the project.
+- The DAW project's **base** tempo: the tempo the host reports at the start of its timeline, not
+  the tempo under the playhead. Without ARA there is no tempo-map sync (§1): OpenUtau uses this
+  only as a guard — warning the user once per distinct mismatch, with a **±0.5 BPM** tolerance,
+  that bars will misalign — never to retempo-map the project.
+- The reference bridge reports it only while the playhead is within 100 ms of the timeline start,
+  only once a value has held still for a second, and never more than once every 5 s. A project
+  that carries a tempo map moves the tempo the host reports as the playhead walks it; relaying
+  those samples would raise a warning per ramp step for a mismatch that is not there — and a
+  tempo map that matches OpenUtau's aligns in any case, because the audio was rendered through
+  it before it was sent. The receiver shows each of these as a dialog, so a sender that paces
+  them any faster turns one edit into a stack of windows.
 
 ### 6.3 MIDI input (reserved — not in v1)
 

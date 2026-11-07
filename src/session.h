@@ -162,8 +162,26 @@ private:
     static constexpr int64_t kPlayheadIntervalMs = 100;
     /// How far a parked playhead must move before its position is worth a notification.
     static constexpr double kPlayheadScrubMs = 50.0;
-    /// Tempo changes below this are noise; OpenUtau's own matching tolerance is 0.5 BPM.
-    static constexpr double kTempoEpsilon = 0.01;
+
+    /// How close to the start of the host's timeline the playhead has to be for the host's tempo
+    /// to be the project's *base* tempo. See PumpTempo: that is the only value worth reporting,
+    /// because it is the only one OpenUtau's guard compares against its own first tempo.
+    static constexpr double kTempoAnchorSeconds = 0.1;
+    /// How long a value has to hold still before it counts as settled. A tempo that is still
+    /// moving is a user drag or a host warming up, and one edit should be one notification.
+    static constexpr int64_t kTempoSettleMs = 1000;
+    /// Hard floor between two notifications. Whatever a host reports, and however badly it
+    /// behaves, the other side never sees more than one of these per interval: OpenUtau shows
+    /// each one as a modal dialog, so a stream of them is a way to wedge its UI (2026-11 field
+    /// report: a gradual tempo change turned into hundreds of dialogs and a killed process).
+    static constexpr int64_t kTempoMinIntervalMs = 5000;
+    /// OpenUtau's own matching tolerance is 0.5 BPM, so anything finer is invisible to it —
+    /// sending it only costs traffic, and during a ramp it is what makes every poll a "change".
+    static constexpr double kTempoEpsilon = 0.5;
+    /// Below this, two reports of the same tempo are the same tempo: hosts do not agree on the
+    /// exact digits of a constant, and a value that never holds still never settles. Only
+    /// movement above it restarts the settle wait.
+    static constexpr double kTempoJitter = 0.001;
 
     void Run();
     void PumpInputs();
@@ -236,8 +254,14 @@ private:
     bool sentPlaying_ = true;
     double sentPositionMs_ = 0.0;
     int64_t lastPlayheadMs_ = 0;
+    /// The base tempo as last sent, and the value currently being watched at the anchor with the
+    /// moment it last changed — a settled value and one still on its way are not the same thing.
     double sentTempo_ = 0.0;
     bool tempoSent_ = false;
+    double pendingTempo_ = 0.0;
+    bool tempoPending_ = false;
+    int64_t pendingTempoSinceMs_ = 0;
+    int64_t lastTempoSentMs_ = 0;
 
     // --- the info window's strings, written on the worker, read on the main thread ---
     mutable std::mutex uiMutex_;

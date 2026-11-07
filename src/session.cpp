@@ -132,7 +132,11 @@ void Session::ServeConnection() {
     sentPlaying_ = !playing_.load();
     sentPositionMs_ = 0.0;
     lastPlayheadMs_ = 0;
+    // A fresh connection re-learns the base tempo rather than assuming the last one still holds;
+    // the anchor rule in PumpTempo decides when there is anything to learn it from.
     tempoSent_ = false;
+    tempoPending_ = false;
+    lastTempoSentMs_ = 0;
 }
 
 void Session::Republish() {
@@ -223,13 +227,48 @@ void Session::PumpTempo() {
     if (connection_ == nullptr || !hasTempo_.load()) {
         return;
     }
-    double tempo = tempo_.load();
-    if (tempoSent_ && std::abs(tempo - sentTempo_) <= kTempoEpsilon) {
+    // What the receiver does with this value is compare it against its own project's tempo and
+    // warn when the two disagree (PROTOCOL.md §6.2). That comparison only means anything at the
+    // start of the host's timeline: there the host reports the project's *base* tempo, which is
+    // what the other side is holding. Anywhere else it reports the tempo under the playhead,
+    // which a project carrying a tempo map moves block by block — and a tempo map that matches
+    // OpenUtau's aligns perfectly, because the audio was rendered through it before it arrived.
+    // Reporting those samples would be a warning per ramp step about a mismatch that is not
+    // there, so outside the anchor nothing is sent at all. Position and tempo are two atomics
+    // from the same block, so the pair can straddle one block boundary; both halves are still at
+    // the anchor, and a value that is merely a block old is absorbed by the settle wait below.
+    if (!hasPosition_.load() || std::abs(positionSeconds_.load()) > kTempoAnchorSeconds) {
+        tempoPending_ = false;
         return;
+    }
+    double tempo = tempo_.load();
+    int64_t now = NowMs();
+    if (tempo <= 0.0) {
+        return;  // A host that reports no usable tempo has no base tempo to report.
+    }
+    // A value that is still moving is a drag of the tempo control or a host settling after a
+    // seek: wait for it to hold still, so one edit becomes one notification rather than one per
+    // poll. Any movement restarts the wait, including movement too small to be worth sending —
+    // otherwise a slow drag would settle on a value it had already left.
+    if (!tempoPending_ || std::abs(tempo - pendingTempo_) > kTempoJitter) {
+        pendingTempo_ = tempo;
+        pendingTempoSinceMs_ = now;
+        tempoPending_ = true;
+        return;
+    }
+    if (now - pendingTempoSinceMs_ < kTempoSettleMs) {
+        return;
+    }
+    if (tempoSent_ && std::abs(tempo - sentTempo_) <= kTempoEpsilon) {
+        return;  // Settled, and already the value the other side is holding.
+    }
+    if (tempoSent_ && now - lastTempoSentMs_ < kTempoMinIntervalMs) {
+        return;  // Too soon after the last one: the receiver shows each of these as a dialog.
     }
     if (connection_->SendNotification(kind::kBpm, BuildBpmPayload(tempo))) {
         sentTempo_ = tempo;
         tempoSent_ = true;
+        lastTempoSentMs_ = now;
     }
 }
 

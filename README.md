@@ -32,8 +32,10 @@ one and you must change the other.**
 - **Playhead sync (v1.1).** The DAW's transport position is sent one-way to OpenUtau —
   immediately on state changes, every 100 ms while playing, and on scrubs of more than
   50 ms while parked. OpenUtau's own playhead follows the DAW, never the reverse.
-- **Tempo guard (v1.1).** The DAW's tempo is reported when it changes; OpenUtau warns
-  once per distinct mismatch that bars will misalign (there is no tempo-map sync).
+- **Tempo guard (v1.1).** The DAW's base tempo — the tempo at the start of its timeline — is
+  reported once it settles, at most once every 5 s. OpenUtau warns once per distinct mismatch
+  that bars will misalign (there is no tempo-map sync). A gradual tempo change in the DAW is
+  not a stream of mismatches, and can never become a stream of warnings.
 
 ## Formats
 

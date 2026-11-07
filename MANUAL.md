@@ -140,10 +140,16 @@ during playback is meaningless — it gets overwritten.
 
 ### Tempo (BPM)
 
-The two projects align **by absolute time (seconds)**. When the DAW's BPM differs from the
-OpenUtau project's, OpenUtau raises a notice once per kind of mismatch; aligning bars
-means making both sides use the same BPM. Playhead sync runs on time and is unaffected by
-BPM.
+The two projects align **by absolute time (seconds)**. When the DAW project's own tempo —
+the one at the start of its timeline — differs from the OpenUtau project's, OpenUtau raises a
+notice once per kind of mismatch; aligning bars means making both sides use the same base
+BPM. Playhead sync runs on time and is unaffected by BPM.
+
+A tempo change part-way through the DAW project (drawn automation, a ramp) is not reported:
+the value under the playhead is not a base tempo, and warning about it once per step would
+only ever be noise. If the two tempo maps are the same shape, the singing still lines up,
+because the audio was rendered at OpenUtau's tempo before it was sent — the two sides agree
+in seconds throughout. Only bars lose their meaning, which is what the notice above says.
 
 ### Export / Bounce
 
