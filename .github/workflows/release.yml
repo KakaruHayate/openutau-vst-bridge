@@ -49,9 +49,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # A tag push already points where it points; a manual run has to be told, or it would
+          # build whatever branch was selected and publish it under the tag someone typed.
+          ref: ${{ github.event.inputs.tag || github.ref }}
           # clap, clap-wrapper, r8brain and xxHash are submodules, and clap-wrapper carries its
           # own vendored CPM for resolving the VST3 SDK.
           submodules: recursive
+
+      - name: Check the tag is the version this build will report
+        # The host shows what project() says, and the release is named after the tag, so a mismatch
+        # ships a build that lies about itself. Parsed with sed rather than grep -P, which BSD grep
+        # on the macOS runner does not have.
+        shell: bash
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -e
+          VERSION=$(sed -n 's/.*project(openutau-vst-bridge VERSION \([0-9][0-9.]*\).*/\1/p' CMakeLists.txt)
+          echo "tag: $TAG  project version: $VERSION"
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not read the version out of CMakeLists.txt"
+            exit 1
+          fi
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "::error::Tag $TAG does not match the version in CMakeLists.txt ($VERSION)"
+            exit 1
+          fi
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
