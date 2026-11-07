@@ -183,11 +183,24 @@ private:
     /// movement above it restarts the settle wait.
     static constexpr double kTempoJitter = 0.001;
 
+    /// The worker loop: one round of everything the connection and the host need, then the
+    /// snapshot the audio thread reads, then the snapshots nobody is reading any more.
     void Run();
+    /// Sends what the audio thread and the host latched: a rate change's re-pull, a track change,
+    /// and a playback start nobody has heard about yet.
     void PumpInputs();
+    /// Reports the playhead: state changes immediately, movement at the throttle's pace, scrubs
+    /// past a threshold. Parked and still is not news.
     void PumpPlayhead();
+    /// Reports the base tempo, which is the only tempo the receiver can compare against its own.
+    /// The constants above say where it may come from, how still it has to hold and how close two
+    /// reports may be; the definition says why.
     void PumpTempo();
+    /// One accept-or-poll round: takes a connection if there is none, serves the one there is, and
+    /// drops it when the round reports the peer gone.
     void ServeConnection();
+    /// Rebuilds the snapshot the audio thread plays, after the layout, the track list or the host
+    /// sample rate changed.
     void Republish();
 
     /// Audio thread, offline only. Sleeps until the worker has everything or until waiting stops
