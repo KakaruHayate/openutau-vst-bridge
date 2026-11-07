@@ -62,6 +62,7 @@ public:
     /// a hang when a host unloads a plugin.
     static constexpr int kPollMs = 50;
 
+    /// A session that has not started: nothing bound, no worker, nothing advertised.
     Session() = default;
 
     /// The discovery directory is injectable for the same reason Discovery's is: a test that
@@ -69,9 +70,13 @@ public:
     explicit Session(std::filesystem::path discoveryDirectory)
         : discovery_(std::move(discoveryDirectory)) {}
 
+    /// Stops the worker and withdraws the advertisement; safe on a session that never started.
     ~Session() override;
 
+    /// One listener, one worker, one connection: a copy would own a second of each, and the audio
+    /// held is reachable from the DAW's thread, so there is nothing copyable here.
     Session(const Session &) = delete;
+    /// See above: the audio a session holds is reached from the DAW's thread, so it is not copied.
     Session &operator=(const Session &) = delete;
 
     /// Main thread. Binds a port, advertises it, then starts the worker — in that order,
@@ -82,11 +87,15 @@ public:
     /// Main thread. Idempotent, and safe to call on a session that never started.
     void Stop();
 
+    /// True while the advertisement is up and the worker is running, i.e. between Start()
+    /// returning true and Stop().
     bool IsRunning() const { return running_.load(); }
 
     /// 0 until Start() succeeds.
     int Port() const { return listener_.Port(); }
 
+    /// True while a peer holds the socket. Audio and playback outlive this (see Render), so an
+    /// instance whose OpenUtau quit keeps playing what it already holds.
     bool IsConnected() const { return connected_.load(); }
 
     /// The host's rate, from `activate`. Clips are converted on arrival, so a change drops
@@ -96,6 +105,7 @@ public:
     /// Which OpenUtau track this instance routes. OpenUtau's volume/pan/mute fields remain on the
     /// wire for compatibility, but the bridge emits pre-fader audio and the DAW owns those controls.
     void SetTrackNo(int trackNo) { trackNo_.store(trackNo); }
+    /// The track this instance is routing now, which the timeline was last built from.
     int TrackNo() const { return trackNo_.load(); }
 
     /// Main thread, from the track picker. Changes the routing immediately - the audio follows
@@ -208,10 +218,15 @@ private:
     bool WaitForSync();
 
     // ConnectionHandler, all on the worker thread.
+    /// The project baseline: kept for the host session, never rendered from.
     void OnUstx(const std::string &ustx) override;
+    /// Replaces the layout wholesale and answers with the hashes whose audio is not held yet.
     std::vector<std::string> OnPartLayout(const std::vector<PartLayout> &parts) override;
+    /// The track list: routing for the timeline, names and singers for the window's picker.
     void OnTracks(const std::vector<TrackInfo> &tracks) override;
+    /// The project name and saved state the window shows.
     void OnProjectInfo(const ProjectInfo &info) override;
+    /// Audio for one hash, converted to the host's rate as it arrives.
     void OnAudio(const std::string &hash, std::vector<uint8_t> &&pcm) override;
 
     Listener listener_;
