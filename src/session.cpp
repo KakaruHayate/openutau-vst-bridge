@@ -244,7 +244,11 @@ void Session::PumpTempo() {
     double tempo = tempo_.load();
     int64_t now = NowMs();
     if (tempo <= 0.0) {
-        return;  // A host that reports no usable tempo has no base tempo to report.
+        // A host that reports no usable tempo is not a source of one either: whatever was being
+        // watched is gone, so when a real value comes back it starts its settle wait again rather
+        // than inheriting the stillness of a number that was never a tempo.
+        tempoPending_ = false;
+        return;
     }
     // A value that is still moving is a drag of the tempo control or a host settling after a
     // seek: wait for it to hold still, so one edit becomes one notification rather than one per
