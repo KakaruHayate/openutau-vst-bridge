@@ -74,6 +74,11 @@ target_include_directories(${PROJECT_NAME}-impl
         ${CMAKE_CURRENT_SOURCE_DIR}/libs/r8brain
 )
 target_link_libraries(${PROJECT_NAME}-impl PUBLIC clap clap-wrapper-extensions)
+# The version a host shows for the plug-in, and the only place it is written down. The release
+# workflow tags exactly the version in project() above, so the number a user sees in a host cannot
+# keep saying an older one — which it did, from 1.0.0 through 1.0.2, as a literal in plugin.cpp.
+target_compile_definitions(${PROJECT_NAME}-impl
+        PRIVATE OPENUTAU_BRIDGE_VERSION="${PROJECT_VERSION}")
 # std::thread, and r8brain calls pthread_mutex_* directly. Linux with glibc 2.34 or newer folds
 # libpthread into libc and links this anyway, which is exactly why it is easy to leave out and
 # find later on an older or musl toolchain. PUBLIC because the tests and the standalone host link

@@ -23,6 +23,9 @@ untouched, so 1.0.3 works with every OpenUtau build that speaks v1.1 or later:
   these as a dialog must never be handed a stream of them.
 - **The comparison tolerance is OpenUtau's own ±0.5 BPM** (it was 0.01), so a change OpenUtau
   cannot see no longer costs traffic — nor counts as "a change" on every block of a ramp.
+- **The version a host shows is the release version.** The plug-in's descriptor carried a literal
+  `0.2.0` that never followed the releases — 1.0.0 through 1.0.2 all announced themselves as
+  0.2.0 in a host's plug-in list. It now comes from the same number the release is tagged with.
 
 **Nothing about alignment changed.** The two sides still align by absolute time, and a DAW tempo
 map that matches OpenUtau's still lines up exactly: the audio is rendered through that tempo map
@@ -33,6 +36,10 @@ Two cases are on record as deliberate: a tempo map that does *not* match OpenUta
 not reported (a single value cannot describe a map — bars drift and seconds stay aligned), and
 a mismatch introduced anywhere other than the timeline start is reported only when the playhead
 is back at the start.
+
+1.0.3 was re-cut the day it shipped. The first asset set announced itself as 0.2.0 to every host;
+the tag was moved and the archives replaced rather than opening a 1.0.4 for a version string.
+Downloading `plugins-*-latest.zip` from this release gets the corrected build either way.
 
 ---
 
