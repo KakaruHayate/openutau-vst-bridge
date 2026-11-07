@@ -21,6 +21,14 @@
 #include "session.h"
 #include "transport.h"
 
+/// What the host shows as this plug-in's version, and what a support report quotes. The build
+/// system passes the project version from CMakeLists.txt, which is the same number the release is
+/// tagged with, so the two cannot drift; a build made without it says so rather than claiming a
+/// release it is not.
+#ifndef OPENUTAU_BRIDGE_VERSION
+#define OPENUTAU_BRIDGE_VERSION "dev"
+#endif
+
 namespace {
 
 constexpr const char *kPluginId = "moe.kakaru.openutau-bridge";
@@ -44,7 +52,7 @@ const clap_plugin_descriptor_t kDescriptor = {
     "https://github.com/KakaruHayate/openutau-vst-bridge",
     "",  // manual_url
     "",  // support_url
-    "0.2.0",
+    OPENUTAU_BRIDGE_VERSION,
     "Places audio rendered by OpenUtau onto the DAW timeline.",
     kFeatures,
 };
