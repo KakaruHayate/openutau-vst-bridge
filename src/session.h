@@ -62,6 +62,7 @@ public:
     /// a hang when a host unloads a plugin.
     static constexpr int kPollMs = 50;
 
+    /// A session that has not started: nothing bound, no worker, nothing advertised.
     Session() = default;
 
     /// The discovery directory is injectable for the same reason Discovery's is: a test that
@@ -69,9 +70,13 @@ public:
     explicit Session(std::filesystem::path discoveryDirectory)
         : discovery_(std::move(discoveryDirectory)) {}
 
+    /// Stops the worker and withdraws the advertisement; safe on a session that never started.
     ~Session() override;
 
+    /// One listener, one worker, one connection: a copy would own a second of each, and the audio
+    /// held is reachable from the DAW's thread, so there is nothing copyable here.
     Session(const Session &) = delete;
+    /// See above: the audio a session holds is reached from the DAW's thread, so it is not copied.
     Session &operator=(const Session &) = delete;
 
     /// Main thread. Binds a port, advertises it, then starts the worker — in that order,
@@ -82,11 +87,15 @@ public:
     /// Main thread. Idempotent, and safe to call on a session that never started.
     void Stop();
 
+    /// True while the advertisement is up and the worker is running, i.e. between Start()
+    /// returning true and Stop().
     bool IsRunning() const { return running_.load(); }
 
     /// 0 until Start() succeeds.
     int Port() const { return listener_.Port(); }
 
+    /// True while a peer holds the socket. Audio and playback outlive this (see Render), so an
+    /// instance whose OpenUtau quit keeps playing what it already holds.
     bool IsConnected() const { return connected_.load(); }
 
     /// The host's rate, from `activate`. Clips are converted on arrival, so a change drops
@@ -96,6 +105,7 @@ public:
     /// Which OpenUtau track this instance routes. OpenUtau's volume/pan/mute fields remain on the
     /// wire for compatibility, but the bridge emits pre-fader audio and the DAW owns those controls.
     void SetTrackNo(int trackNo) { trackNo_.store(trackNo); }
+    /// The track this instance is routing now, which the timeline was last built from.
     int TrackNo() const { return trackNo_.load(); }
 
     /// Main thread, from the track picker. Changes the routing immediately - the audio follows
@@ -162,14 +172,45 @@ private:
     static constexpr int64_t kPlayheadIntervalMs = 100;
     /// How far a parked playhead must move before its position is worth a notification.
     static constexpr double kPlayheadScrubMs = 50.0;
-    /// Tempo changes below this are noise; OpenUtau's own matching tolerance is 0.5 BPM.
-    static constexpr double kTempoEpsilon = 0.01;
 
+    /// How close to the start of the host's timeline the playhead has to be for the host's tempo
+    /// to be the project's *base* tempo. See PumpTempo: that is the only value worth reporting,
+    /// because it is the only one OpenUtau's guard compares against its own first tempo.
+    static constexpr double kTempoAnchorSeconds = 0.1;
+    /// How long a value has to hold still before it counts as settled. A tempo that is still
+    /// moving is a user drag or a host warming up, and one edit should be one notification.
+    static constexpr int64_t kTempoSettleMs = 1000;
+    /// Hard floor between two notifications. Whatever a host reports, and however badly it
+    /// behaves, the other side never sees more than one of these per interval: OpenUtau shows
+    /// each one as a modal dialog, so a stream of them is a way to wedge its UI (2026-11 field
+    /// report: a gradual tempo change turned into hundreds of dialogs and a killed process).
+    static constexpr int64_t kTempoMinIntervalMs = 5000;
+    /// OpenUtau's own matching tolerance is 0.5 BPM, so anything finer is invisible to it —
+    /// sending it only costs traffic, and during a ramp it is what makes every poll a "change".
+    static constexpr double kTempoEpsilon = 0.5;
+    /// Below this, two reports of the same tempo are the same tempo: hosts do not agree on the
+    /// exact digits of a constant, and a value that never holds still never settles. Only
+    /// movement above it restarts the settle wait.
+    static constexpr double kTempoJitter = 0.001;
+
+    /// The worker loop: one round of everything the connection and the host need, then the
+    /// snapshot the audio thread reads, then the snapshots nobody is reading any more.
     void Run();
+    /// Sends what the audio thread and the host latched: a rate change's re-pull, a track change,
+    /// and a playback start nobody has heard about yet.
     void PumpInputs();
+    /// Reports the playhead: state changes immediately, movement at the throttle's pace, scrubs
+    /// past a threshold. Parked and still is not news.
     void PumpPlayhead();
+    /// Reports the base tempo, which is the only tempo the receiver can compare against its own.
+    /// The constants above say where it may come from, how still it has to hold and how close two
+    /// reports may be; the definition says why.
     void PumpTempo();
+    /// One accept-or-poll round: takes a connection if there is none, serves the one there is, and
+    /// drops it when the round reports the peer gone.
     void ServeConnection();
+    /// Rebuilds the snapshot the audio thread plays, after the layout, the track list or the host
+    /// sample rate changed.
     void Republish();
 
     /// Audio thread, offline only. Sleeps until the worker has everything or until waiting stops
@@ -177,10 +218,15 @@ private:
     bool WaitForSync();
 
     // ConnectionHandler, all on the worker thread.
+    /// The project baseline: kept for the host session, never rendered from.
     void OnUstx(const std::string &ustx) override;
+    /// Replaces the layout wholesale and answers with the hashes whose audio is not held yet.
     std::vector<std::string> OnPartLayout(const std::vector<PartLayout> &parts) override;
+    /// The track list: routing for the timeline, names and singers for the window's picker.
     void OnTracks(const std::vector<TrackInfo> &tracks) override;
+    /// The project name and saved state the window shows.
     void OnProjectInfo(const ProjectInfo &info) override;
+    /// Audio for one hash, converted to the host's rate as it arrives.
     void OnAudio(const std::string &hash, std::vector<uint8_t> &&pcm) override;
 
     Listener listener_;
@@ -236,8 +282,14 @@ private:
     bool sentPlaying_ = true;
     double sentPositionMs_ = 0.0;
     int64_t lastPlayheadMs_ = 0;
+    /// The base tempo as last sent, and the value currently being watched at the anchor with the
+    /// moment it last changed — a settled value and one still on its way are not the same thing.
     double sentTempo_ = 0.0;
     bool tempoSent_ = false;
+    double pendingTempo_ = 0.0;
+    bool tempoPending_ = false;
+    int64_t pendingTempoSinceMs_ = 0;
+    int64_t lastTempoSentMs_ = 0;
 
     // --- the info window's strings, written on the worker, read on the main thread ---
     mutable std::mutex uiMutex_;

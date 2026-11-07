@@ -1,6 +1,49 @@
 # OpenUtau Bridge Release Notes
 
-**Version 1.0.1 · Protocol v1.2 · 2026-10-02**
+**Version 1.0.3 · Protocol v1.2 · 2026-11-07**
+
+1.0.3 is a fix for one project shape that could take OpenUtau down: a DAW project carrying a
+**tempo map**, especially a gradual tempo change. The host reports a new tempo every block
+while the playhead walks it, the plugin relayed every one of those, and OpenUtau answers each
+`bpm` it disagrees with by opening a **modal dialog** — so a single ramp produced hundreds of
+error windows, gigabytes of memory and a process that had to be ended from Task Manager
+(2026-11-07 field report; the code path is `Session::PumpTempo` on this side and
+`DawManager.HandleBpm` on OpenUtau's).
+
+Only *when* the tempo is reported changed. The wire format, the message and OpenUtau's side are
+untouched, so 1.0.3 works with every OpenUtau build that speaks v1.1 or later:
+
+- **Only the base tempo is reported** — the tempo the host reports within 100 ms of the start of
+  its timeline, which is the only value OpenUtau's guard compares against its project's first
+  tempo. The tempo under a playhead walking a tempo map is a different quantity, and it is no
+  longer sent at all.
+- **A value has to settle** before it goes out (one second of stillness), so dragging the tempo
+  control is one notification instead of one per poll.
+- **At most one notification per 5 s**, whatever the host reports. A receiver that shows each of
+  these as a dialog must never be handed a stream of them.
+- **The comparison tolerance is OpenUtau's own ±0.5 BPM** (it was 0.01), so a change OpenUtau
+  cannot see no longer costs traffic — nor counts as "a change" on every block of a ramp.
+
+**Nothing about alignment changed.** The two sides still align by absolute time, and a DAW tempo
+map that matches OpenUtau's still lines up exactly: the audio is rendered through that tempo map
+before it is sent. What is gone is the false warning a *matching* tempo map used to raise on
+every step, and the avalanche that came with it.
+
+Two cases are on record as deliberate: a tempo map that does *not* match OpenUtau's is still
+not reported (a single value cannot describe a map — bars drift and seconds stay aligned), and
+a mismatch introduced anywhere other than the timeline start is reported only when the playhead
+is back at the start.
+
+---
+
+## 1.0.2 · 2026-10-05
+
+One community fix (#12): the VST3 module loads in Ableton Live again. No protocol or behaviour
+change.
+
+---
+
+## 1.0.1 · 2026-10-02
 
 1.0.1 is 1.0.0 with the plug-in icon. The VST3 and CLAP modules now carry the same
 puzzle-piece artwork OpenUTAU-FX uses, on Windows and macOS, so the two plug-ins read as

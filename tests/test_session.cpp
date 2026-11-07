@@ -79,6 +79,23 @@ std::string HashOf(const std::vector<uint8_t> &pcm) {
     return bridge::FormatHash(bridge::Xxh64(pcm.data(), pcm.size()));
 }
 
+/// Drives the transport for `durationMs` the way the plugin's process() would, and collects the
+/// bpm notifications that arrive meanwhile. The session's own 50 ms pace decides how many samples
+/// it sees, so what comes back is what a host would produce rather than what a loop could.
+template <typename Drive>
+std::vector<ControlLine> BpmsWhile(FakeOpenUtau &utau, int64_t durationMs, Drive drive) {
+    std::vector<ControlLine> seen;
+    int64_t deadline = bridge::NowMs() + durationMs;
+    while (bridge::NowMs() < deadline) {
+        drive();
+        ControlLine line = utau.ReadControl(10);
+        if (line.kind == ControlKind::Notification && line.name == kind::kBpm) {
+            seen.push_back(line);
+        }
+    }
+    return seen;
+}
+
 /// `"port":<n>` out of an advertisement, without a JSON parser: nlohmann is private to
 /// messages.cpp, and a test that reads the file the way a stranger would is the point here.
 int PortIn(const std::string &json) {
@@ -361,13 +378,12 @@ TEST_CASE("The transport is reported upstream and project info reaches the windo
         return state.projectName == "my song" && state.projectSaved;
     }));
 
-    // A parked transport with a position: the first report is a state change, and the tempo
-    // has never been sent.
+    // A parked transport with a position: the first report is a state change. The tempo is a
+    // base-tempo report and this park is not at the anchor, so nothing about it goes out here —
+    // the case below is where that is proven.
     session.NoteTransport(true, 2.0, false, true, 120.0);
     ControlLine playhead = ReadUntil(kind::kPlayhead, "\"positionMs\":2000");
     CHECK(playhead.payload.find("\"playing\":false") != std::string::npos);
-    ControlLine bpm = ReadUntil(kind::kBpm, "120");
-    CHECK(bpm.name == kind::kBpm);
 
     // Parked at the same place is not news.
     session.NoteTransport(true, 2.0, false, true, 120.0);
@@ -388,13 +404,91 @@ TEST_CASE("The transport is reported upstream and project info reaches the windo
     });
     CHECK(saw6000);
 
-    // Tempo changes are reported; sub-epsilon ones are not.
-    session.NoteTransport(true, 6.0, true, true, 137.5);
-    ReadUntil(kind::kBpm, "137.5");
-    session.NoteTransport(true, 6.0, false, true, 137.505);  // Stops, to silence the playhead.
-    ReadUntil(kind::kPlayhead, "");                          // The stop itself is a change.
-    session.NoteTransport(true, 6.0, false, true, 137.505);
-    CHECK(utau.ReadControl(300).kind == ControlKind::Unknown);
+    // Tempo changes are covered by their own case below: the base tempo is reported only at the
+    // start of the timeline and only once it has settled, which needs playhead time to prove.
+
+    session.Stop();
+}
+
+TEST_CASE("The tempo notification reports a base tempo, and only once it settles") {
+    // PROTOCOL.md §6.2: the receiver compares `bpm` against its own project's tempo and warns per
+    // mismatch. Without ARA, a project that carries a tempo map moves the tempo the host reports
+    // as the playhead walks it, so relaying every value is a warning per ramp step about a
+    // mismatch that is not there — and a matching tempo map aligns, because the audio was
+    // rendered through it before it arrived. Only the base tempo is news, and only once it holds
+    // still. (2026-11 field report: one gradual tempo change became hundreds of dialogs on the
+    // other side, and a killed process.)
+    TempDir dir;
+    Session session(dir.path);
+    session.SetHostSampleRate(44100.0);
+    REQUIRE(session.Start());
+    FakeOpenUtau utau;
+    REQUIRE(utau.Connect(session.Port()));
+
+    const int64_t started = bridge::NowMs();
+
+    // A gradual tempo change, played through: the playhead walks from 2 s on while the tempo
+    // climbs 20 BPM per second, so every poll sees a different tempo and none of them is the
+    // project's base tempo.
+    auto duringRamp = BpmsWhile(utau, 600, [&] {
+        int64_t elapsed = bridge::NowMs() - started;
+        session.NoteTransport(true, 2.0 + elapsed / 1000.0, true, true, 120.0 + elapsed / 50.0);
+    });
+    CHECK(duringRamp.empty());
+
+    // The same climb, at the start of the timeline where the base tempo lives: still moving, so
+    // still not a value anyone can be told about.
+    auto duringDrag = BpmsWhile(utau, 300, [&] {
+        int64_t elapsed = bridge::NowMs() - started;
+        session.NoteTransport(true, 0.0, false, true, 120.0 - elapsed / 100.0);
+    });
+    CHECK(duringDrag.empty());
+
+    // It stops moving: one notification, carrying the value it settled on.
+    auto settled = BpmsWhile(utau, 1500, [&] {
+        session.NoteTransport(true, 0.0, false, true, 100.0);
+    });
+    REQUIRE(settled.size() == 1);
+    CHECK(settled[0].payload.find("100") != std::string::npos);
+
+    // Finer than the receiver's own ±0.5 BPM tolerance, so it is invisible to it and not sent —
+    // even though this one settles exactly like the last.
+    auto tooFine = BpmsWhile(utau, 1500, [&] {
+        session.NoteTransport(true, 0.0, false, true, 100.2);
+    });
+    CHECK(tooFine.empty());
+
+    session.Stop();
+}
+
+TEST_CASE("The tempo notification is never more than one per floor") {
+    // The receiver shows each `bpm` as a dialog, so a stream of them is a way to wedge it: there
+    // is a hard floor between two sends whatever the host reports. The edit still arrives, late
+    // rather than never — a guard that went quiet for good would be worse than no guard at all.
+    TempDir dir;
+    Session session(dir.path);
+    session.SetHostSampleRate(44100.0);
+    REQUIRE(session.Start());
+    FakeOpenUtau utau;
+    REQUIRE(utau.Connect(session.Port()));
+
+    auto first = BpmsWhile(utau, 1500, [&] {
+        session.NoteTransport(true, 0.0, false, true, 100.0);
+    });
+    REQUIRE(first.size() == 1);
+
+    // Settled and distinct, but inside the floor: held back rather than sent.
+    auto tooSoon = BpmsWhile(utau, 1200, [&] {
+        session.NoteTransport(true, 0.0, false, true, 60.0);
+    });
+    CHECK(tooSoon.empty());
+
+    // The floor passes and the same value finally goes out: late, not mute.
+    auto eventually = BpmsWhile(utau, 4500, [&] {
+        session.NoteTransport(true, 0.0, false, true, 60.0);
+    });
+    REQUIRE(eventually.size() == 1);
+    CHECK(eventually[0].payload.find("60") != std::string::npos);
 
     session.Stop();
 }
