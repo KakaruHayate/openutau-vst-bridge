@@ -39,6 +39,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <atomic>
 #include <sys/select.h>
 #include <thread>
 #include <vector>
@@ -108,16 +109,13 @@ struct WindowState {
     std::string title = "OpenUtau Bridge";
     Atom deleteAtom = 0;  // WM_DELETE_WINDOW: the floating window's close box.
 
-    // The event thread below: started once the window exists, joined at destruction.
-    // Atomic because the destructor stops it from the main thread; parent/owner/floating
-    // are atomic for the same reason — the main thread writes them in EmbedInto/OwnTo
-    // while the event thread reads and clears them in HideWindow (the floating window's
-    // close box can race the host's hide()).
-    std::atomic<bool> running{false};
-    std::thread eventThread;
+    // parent/owner/floating are atomic because the main thread writes them in
+    // EmbedInto/OwnTo while the event thread reads and clears them in HideWindow
+    // (the floating window's close box can race the host's hide()).
     std::atomic<Window> parent{0};  // The host window we are embedded into, if any.
     std::atomic<Window> owner{0};   // The host window we are transient to, if any.
     std::atomic<bool> floating{true};
+    bool nativeCreated = false;
 
     // The popup's world. popupMutex guards popupOpen and the popup's map/unmap
     // transitions, because Hide() arrives on the main thread while the event thread may
@@ -447,30 +445,62 @@ void HideWindow(WindowState *state) {
     XFlush(display);
 }
 
+struct SharedDisplay {
+    std::mutex mutex;
+    Display *display = nullptr;
+    int screen = 0;
+    Colormap colormap = 0;
+    Visual *visual = nullptr;
+    Window root = 0;
+    std::atomic<bool> running{false};
+    std::thread eventThread;
+    std::vector<WindowState *> windows;
+};
+
+SharedDisplay &GetSharedDisplay() {
+    static SharedDisplay shared;
+    return shared;
+}
+
 /// One select()-bounded round of the event loop: drain the queue, and when the queue
 /// stayed empty for a tick, repaint at 4 Hz — the timer the Win32 backend gets from
 /// SetTimer and Cocoa from NSTimer, built here out of the connection's file descriptor.
-void EventLoop(WindowState *state) {
-    Display *display = state->display;
+void EventLoop(SharedDisplay *shared) {
+    Display *display = shared->display;
     int fd = ConnectionNumber(display);
-    while (state->running) {
+    while (shared->running) {
         fd_set readable;
         FD_ZERO(&readable);
         FD_SET(fd, &readable);
         timeval timeout{kTickMs / 1000, static_cast<suseconds_t>((kTickMs % 1000) * 1000)};
         int ready = select(fd + 1, &readable, nullptr, nullptr, &timeout);
-        if (!state->running) {
+        if (!shared->running) {
             return;
         }
-        while (state->running && XPending(display) > 0) {
+        std::lock_guard<std::mutex> lock(shared->mutex);
+        if (!shared->running) {
+            return;
+        }
+        while (shared->running && XPending(display) > 0) {
             XEvent event;
             XNextEvent(display, &event);
+            Window target = event.xany.window;
+            WindowState *state = nullptr;
+            for (WindowState *candidate : shared->windows) {
+                if (candidate->window == target || candidate->popup == target) {
+                    state = candidate;
+                    break;
+                }
+            }
+            if (state == nullptr) {
+                continue;
+            }
             switch (event.type) {
                 case Expose:
                     if (event.xexpose.window == state->window) {
                         Paint(state);
                     } else if (event.xexpose.window == state->popup) {
-                        std::lock_guard<std::mutex> lock(state->popupMutex);
+                        std::lock_guard<std::mutex> popupLock(state->popupMutex);
                         if (state->popupOpen) {
                             PaintPopup(state);
                         }
@@ -499,20 +529,22 @@ void EventLoop(WindowState *state) {
         if (ready == 0) {
             // Unconditional: copy, sync and repaint at 4 Hz, self-healing whatever the
             // X server discarded — the same reasoning as the Win32 backend's timer.
-            state->shown = state->session->UiCopy();
-            {
-                std::lock_guard<std::mutex> lock(state->popupMutex);
-                // While the list is dropped open, leave the labels alone: the user is
-                // browsing, and a rebuild under the cursor would move the items.
-                if (!state->popupOpen) {
-                    SyncTracks(state);
+            for (WindowState *state : shared->windows) {
+                state->shown = state->session->UiCopy();
+                {
+                    std::lock_guard<std::mutex> popupLock(state->popupMutex);
+                    // While the list is dropped open, leave the labels alone: the user is
+                    // browsing, and a rebuild under the cursor would move the items.
+                    if (!state->popupOpen) {
+                        SyncTracks(state);
+                    }
                 }
-            }
-            Paint(state);
-            {
-                std::lock_guard<std::mutex> lock(state->popupMutex);
-                if (state->popupOpen) {
-                    PaintPopup(state);
+                Paint(state);
+                {
+                    std::lock_guard<std::mutex> popupLock(state->popupMutex);
+                    if (state->popupOpen) {
+                        PaintPopup(state);
+                    }
                 }
             }
         }
@@ -522,15 +554,29 @@ void EventLoop(WindowState *state) {
 /// Builds everything X-side from scratch. Used at creation; unlike Windows, an X window
 /// does not die behind our back when a host reloads its UI, so there is no rebuild path.
 bool CreateNative(WindowState *state) {
-    Display *display = XOpenDisplay(nullptr);
-    if (display == nullptr) {
-        return false;
+    if (state->nativeCreated) {
+        return state->alive();
     }
+    SharedDisplay &shared = GetSharedDisplay();
+    std::lock_guard<std::mutex> lock(shared.mutex);
+    if (shared.display == nullptr) {
+        static std::once_flag threadsInit;
+        std::call_once(threadsInit, [] { XInitThreads(); });
+        shared.display = XOpenDisplay(nullptr);
+        if (shared.display == nullptr) {
+            return false;
+        }
+        shared.screen = DefaultScreen(shared.display);
+        shared.colormap = DefaultColormap(shared.display, shared.screen);
+        shared.visual = DefaultVisual(shared.display, shared.screen);
+        shared.root = DefaultRootWindow(shared.display);
+    }
+    Display *display = shared.display;
     state->display = display;
-    state->screen = DefaultScreen(display);
-    state->colormap = DefaultColormap(display, state->screen);
-    Visual *visual = DefaultVisual(display, state->screen);
-    Window root = DefaultRootWindow(display);
+    state->screen = shared.screen;
+    state->colormap = shared.colormap;
+    Visual *visual = shared.visual;
+    Window root = shared.root;
 
     const auto alloc = [&](const Rgb &rgb, XftColor *color) {
         XRenderColor render{static_cast<unsigned short>((rgb.r << 8) | rgb.r),
@@ -542,7 +588,6 @@ bool CreateNative(WindowState *state) {
         !alloc(kSelection, &state->selection) || !alloc(kBorder, &state->border) ||
         !alloc(kTextStrong, &state->textStrong) || !alloc(kTextDim, &state->textDim) ||
         !alloc(kAccent, &state->accent)) {
-        XCloseDisplay(display);
         state->display = nullptr;
         return false;
     }
@@ -554,7 +599,6 @@ bool CreateNative(WindowState *state) {
         state->font = XftFontOpenName(display, state->screen, "sans-serif-10");
     }
     if (state->font == nullptr) {
-        XCloseDisplay(display);
         state->display = nullptr;
         return false;
     }
@@ -564,7 +608,7 @@ bool CreateNative(WindowState *state) {
                             state->background.pixel);
     if (state->window == 0) {
         XftFontClose(display, state->font);
-        XCloseDisplay(display);
+        state->font = nullptr;
         state->display = nullptr;
         return false;
     }
@@ -634,8 +678,8 @@ bool CreateNative(WindowState *state) {
         }
         if (state->font != nullptr) {
             XftFontClose(display, state->font);
+            state->font = nullptr;
         }
-        XCloseDisplay(display);
         state->display = nullptr;
         state->window = 0;
         state->popup = 0;
@@ -644,10 +688,14 @@ bool CreateNative(WindowState *state) {
 
     // The first frame, before anything can map the window, and then the event thread
     // that keeps it alive.
+    state->nativeCreated = true;
     SyncTracks(state);
     Paint(state);
-    state->running = true;
-    state->eventThread = std::thread(EventLoop, state);
+    shared.windows.push_back(state);
+    if (!shared.running) {
+        shared.running = true;
+        shared.eventThread = std::thread(EventLoop, &shared);
+    }
     return true;
 }
 
@@ -703,10 +751,11 @@ const clap_plugin_gui_t &GuiTable() {
             *isFloating = true;
             return true;
         },
-        // create — the window already exists per instance; a host that embeds re-parents
-        // it in set_parent below.
+        // create — lazily creates the X11 window on first use so scanning or headless
+        // hosts never open an X11 display or Xft resources.
         +[](const clap_plugin_t *plugin, const char *, bool) {
-            return Instance(plugin) != nullptr;
+            InfoWindow *info = Instance(plugin);
+            return info != nullptr && info->EnsureAlive();
         },
         // destroy — only hides; the window itself dies when the plugin is destroyed.
         +[](const clap_plugin_t *plugin) {
@@ -808,21 +857,10 @@ void GuiUnregister(const clap_plugin_t *plugin) {
 
 InfoWindow *CreateInfoWindow(Session *session, std::function<void()> onTrackPicked) {
     using x11gui::WindowState;
-    // Our event thread touches the same display connection the main thread uses; Xlib
-    // must be told once, before the first display opens, that this is going to happen.
-    static std::once_flag threadsInit;
-    std::call_once(threadsInit, [] { XInitThreads(); });
-
     auto *state = new WindowState();
     state->session = session;
     state->onTrackPicked = std::move(onTrackPicked);
     state->shown = session->UiCopy();
-    if (!x11gui::CreateNative(state)) {
-        // Null means no gui — the plugin stays a degraded but working plugin, exactly
-        // like the stub path.
-        delete state;
-        return nullptr;
-    }
     auto *window = new InfoWindow();
     window->impl_ = state;
     return window;
@@ -833,35 +871,46 @@ InfoWindow::~InfoWindow() {
     if (state == nullptr) {
         return;
     }
-    if (state->eventThread.joinable()) {
-        state->running = false;
-        state->eventThread.join();  // The select timeout wakes it within one tick.
+    std::thread threadToJoin;
+    {
+        x11gui::SharedDisplay &shared = x11gui::GetSharedDisplay();
+        std::lock_guard<std::mutex> lock(shared.mutex);
+        auto it = std::find(shared.windows.begin(), shared.windows.end(), state);
+        if (it != shared.windows.end()) {
+            shared.windows.erase(it);
+        }
+        Display *display = state->display;
+        if (display != nullptr) {
+            x11gui::ClosePopup(state);
+            // Free the draws before their windows: an XftDraw wraps a Render picture tied
+            // to the drawable, and freeing a picture the server already released with its
+            // window raises a BadPicture error, whose default handler ends the process.
+            if (state->popupDraw != nullptr) {
+                XftDrawDestroy(state->popupDraw);
+            }
+            if (state->draw != nullptr) {
+                XftDrawDestroy(state->draw);
+            }
+            if (state->popup != 0) {
+                XDestroyWindow(display, state->popup);
+            }
+            if (state->window != 0) {
+                XDestroyWindow(display, state->window);
+            }
+            if (state->gc != nullptr) {
+                XFreeGC(display, state->gc);
+            }
+            if (state->font != nullptr) {
+                XftFontClose(display, state->font);
+            }
+        }
+        if (shared.windows.empty() && shared.running) {
+            shared.running = false;
+            threadToJoin = std::move(shared.eventThread);
+        }
     }
-    Display *display = state->display;
-    if (display != nullptr) {
-        x11gui::ClosePopup(state);
-        // Free the draws before their windows: an XftDraw wraps a Render picture tied
-        // to the drawable, and freeing a picture the server already released with its
-        // window raises a BadPicture error, whose default handler ends the process.
-        if (state->popupDraw != nullptr) {
-            XftDrawDestroy(state->popupDraw);
-        }
-        if (state->draw != nullptr) {
-            XftDrawDestroy(state->draw);
-        }
-        if (state->popup != 0) {
-            XDestroyWindow(display, state->popup);
-        }
-        if (state->window != 0) {
-            XDestroyWindow(display, state->window);
-        }
-        if (state->gc != nullptr) {
-            XFreeGC(display, state->gc);
-        }
-        if (state->font != nullptr) {
-            XftFontClose(display, state->font);
-        }
-        XCloseDisplay(display);  // The XftColors go with the connection.
+    if (threadToJoin.joinable()) {
+        threadToJoin.join();  // The select timeout wakes it within one tick.
     }
     delete state;
 }
@@ -870,9 +919,10 @@ const clap_plugin_gui_t *InfoWindow::Extension() const { return &GuiTable(); }
 
 bool InfoWindow::EnsureAlive() {
     auto *state = static_cast<x11gui::WindowState *>(impl_);
-    // An X window is not the host's to destroy — the only teardown is ours — so alive
-    // here is simply whether the window was ever built.
-    return state != nullptr && state->alive();
+    if (state == nullptr) {
+        return false;
+    }
+    return x11gui::CreateNative(state);
 }
 
 void InfoWindow::Show() {
