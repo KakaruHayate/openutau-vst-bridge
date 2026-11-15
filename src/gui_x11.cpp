@@ -311,30 +311,52 @@ void SyncTracks(WindowState *state) {
     }
 }
 
-/// Caller holds popupMutex.
-void ClosePopupLocked(WindowState *state) {
+struct SharedDisplay {
+    std::mutex mutex;
+    Display *display = nullptr;
+    int screen = 0;
+    Colormap colormap = 0;
+    Visual *visual = nullptr;
+    Window root = 0;
+    std::atomic<bool> running{false};
+    std::thread eventThread;
+    std::vector<WindowState *> windows;
+    WindowState *activePopup = nullptr;
+};
+
+SharedDisplay &GetSharedDisplay() {
+    static SharedDisplay shared;
+    return shared;
+}
+
+/// Caller holds shared.mutex and state->popupMutex.
+void ClosePopupLocked(SharedDisplay &shared, WindowState *state) {
     if (!state->popupOpen) {
         return;
     }
-    XUngrabPointer(state->display, CurrentTime);  // No-op if the grab was already gone.
+    if (shared.activePopup == state) {
+        XUngrabPointer(state->display, CurrentTime);  // No-op if the grab was already gone.
+        shared.activePopup = nullptr;
+    }
     XUnmapWindow(state->display, state->popup);
     state->popupOpen = false;
     XFlush(state->display);
 }
 
-void ClosePopup(WindowState *state) {
+/// Caller holds shared.mutex.
+void ClosePopup(SharedDisplay &shared, WindowState *state) {
     std::lock_guard<std::mutex> lock(state->popupMutex);
-    ClosePopupLocked(state);
+    ClosePopupLocked(shared, state);
 }
 
 /// Opens the dropped list under the combobox — or above it when the screen ends
 /// first. A pointer grab routes every click to the popup until it closes, which is
-/// how "click elsewhere to dismiss" comes for free. Event thread.
-void OpenPopup(WindowState *state) {
+/// how "click elsewhere to dismiss" comes for free. Event thread; caller holds shared.mutex.
+void OpenPopup(SharedDisplay &shared, WindowState *state) {
     Display *display = state->display;
     Window root = DefaultRootWindow(display);
     std::lock_guard<std::mutex> lock(state->popupMutex);
-    if (state->popupOpen || state->comboLabels.empty()) {
+    if (shared.activePopup != nullptr || state->popupOpen || state->comboLabels.empty()) {
         return;
     }
     int count = static_cast<int>(state->comboLabels.size());
@@ -360,14 +382,20 @@ void OpenPopup(WindowState *state) {
     XMoveResizeWindow(display, state->popup, comboBottomX, y, state->popupWidth,
                       state->popupHeight);
     XMapRaised(display, state->popup);
-    XGrabPointer(display, state->popup, True, ButtonPressMask | ButtonReleaseMask,
-                 GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
+    if (XGrabPointer(display, state->popup, False, ButtonPressMask | ButtonReleaseMask,
+                     GrabModeAsync, GrabModeAsync, None, None, CurrentTime) != GrabSuccess) {
+        XUnmapWindow(display, state->popup);
+        XFlush(display);
+        return;
+    }
+    shared.activePopup = state;
     state->popupOpen = true;
     PaintPopup(state);
 }
 
 /// A press on the main window: the combobox toggles the list, anything else closes it.
-void HandleMainButton(WindowState *state, const XButtonEvent &event) {
+/// Caller holds shared.mutex.
+void HandleMainButton(SharedDisplay &shared, WindowState *state, const XButtonEvent &event) {
     bool onCombo = event.x >= kMargin && event.x < static_cast<int>(kWindowWidth) - kMargin &&
                    event.y >= kComboY && event.y < kComboY + kComboHeight;
     bool open = false;
@@ -377,18 +405,19 @@ void HandleMainButton(WindowState *state, const XButtonEvent &event) {
     }
     if (onCombo) {
         if (open) {
-            ClosePopup(state);
+            ClosePopup(shared, state);
         } else {
-            OpenPopup(state);
+            OpenPopup(shared, state);
         }
     } else if (open) {
-        ClosePopup(state);
+        ClosePopup(shared, state);
     }
 }
 
 /// A press while the list is dropped. The grab makes the popup the event target for
 /// every click, inside or out: inside, it is a pick; outside, a dismissal.
-void HandlePopupButton(WindowState *state, const XButtonEvent &event) {
+/// Caller holds shared.mutex.
+void HandlePopupButton(SharedDisplay &shared, WindowState *state, const XButtonEvent &event) {
     if (event.button == Button4 || event.button == Button5) {
         // Wheel scroll over the list — only ever reachable when the list was clipped.
         std::lock_guard<std::mutex> lock(state->popupMutex);
@@ -415,9 +444,9 @@ void HandlePopupButton(WindowState *state, const XButtonEvent &event) {
         int item = state->popupScroll + event.y / kComboItemHeight;
         if (inside && item >= 0 && item < static_cast<int>(state->comboLabels.size())) {
             picked = item;
-            ClosePopupLocked(state);
+            ClosePopupLocked(shared, state);
         } else if (!inside) {
-            ClosePopupLocked(state);
+            ClosePopupLocked(shared, state);
         }
     }
     if (picked >= 0) {
@@ -433,8 +462,9 @@ void HandlePopupButton(WindowState *state, const XButtonEvent &event) {
 /// The shared hide path: close the list, detach from whatever we were embedded in,
 /// unmap. Runs on the main thread (gui hide) and on the event thread (the floating
 /// window's close box); both end in the same place, and Xlib serializes the calls.
-void HideWindow(WindowState *state) {
-    ClosePopup(state);
+/// Caller holds shared.mutex.
+void HideWindowLocked(SharedDisplay &shared, WindowState *state) {
+    ClosePopup(shared, state);
     Display *display = state->display;
     if (state->parent != 0) {
         XReparentWindow(display, state->window, DefaultRootWindow(display), 0, 0);
@@ -443,23 +473,6 @@ void HideWindow(WindowState *state) {
     }
     XUnmapWindow(display, state->window);
     XFlush(display);
-}
-
-struct SharedDisplay {
-    std::mutex mutex;
-    Display *display = nullptr;
-    int screen = 0;
-    Colormap colormap = 0;
-    Visual *visual = nullptr;
-    Window root = 0;
-    std::atomic<bool> running{false};
-    std::thread eventThread;
-    std::vector<WindowState *> windows;
-};
-
-SharedDisplay &GetSharedDisplay() {
-    static SharedDisplay shared;
-    return shared;
 }
 
 /// One select()-bounded round of the event loop: drain the queue, and when the queue
@@ -508,9 +521,9 @@ void EventLoop(SharedDisplay *shared) {
                     break;
                 case ButtonPress:
                     if (event.xbutton.window == state->popup) {
-                        HandlePopupButton(state, event.xbutton);
+                        HandlePopupButton(*shared, state, event.xbutton);
                     } else if (event.xbutton.window == state->window) {
-                        HandleMainButton(state, event.xbutton);
+                        HandleMainButton(*shared, state, event.xbutton);
                     }
                     break;
                 case ClientMessage:
@@ -519,7 +532,7 @@ void EventLoop(SharedDisplay *shared) {
                         // A floating window closed by its user hides rather than
                         // destroys: the host owns the gui's lifetime, and it was not
                         // asked for destroy().
-                        HideWindow(state);
+                        HideWindowLocked(*shared, state);
                     }
                     break;
                 default:
@@ -881,7 +894,7 @@ InfoWindow::~InfoWindow() {
         }
         Display *display = state->display;
         if (display != nullptr) {
-            x11gui::ClosePopup(state);
+            x11gui::ClosePopup(shared, state);
             // Free the draws before their windows: an XftDraw wraps a Render picture tied
             // to the drawable, and freeing a picture the server already released with its
             // window raises a BadPicture error, whose default handler ends the process.
@@ -942,9 +955,11 @@ void InfoWindow::Hide() {
     if (state == nullptr || !state->alive()) {
         return;
     }
+    x11gui::SharedDisplay &shared = x11gui::GetSharedDisplay();
+    std::lock_guard<std::mutex> lock(shared.mutex);
     // Detach before hiding, as on Windows: while the editor is closed the window must
     // not remain a child of host UI that a reload may destroy.
-    x11gui::HideWindow(state);
+    x11gui::HideWindowLocked(shared, state);
 }
 
 void InfoWindow::EmbedInto(void *parent) {
