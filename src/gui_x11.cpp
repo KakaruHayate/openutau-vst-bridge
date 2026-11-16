@@ -38,6 +38,7 @@
 #include <cstring>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <atomic>
@@ -93,8 +94,14 @@ struct Row {
 /// main thread are either atomic or guarded by popupMutex; Xlib calls themselves are
 /// serialized by XInitThreads.
 struct WindowState {
+    struct CallbackGate {
+        std::mutex mutex;
+        bool alive = true;
+    };
+
     Session *session = nullptr;
     std::function<void()> onTrackPicked;
+    std::shared_ptr<CallbackGate> callbackGate = std::make_shared<CallbackGate>();
     Display *display = nullptr;
     int screen = 0;
     Colormap colormap = 0;
@@ -331,6 +338,10 @@ struct SharedDisplay {
         if (eventThread.joinable()) {
             eventThread.join();
         }
+        if (display != nullptr) {
+            XCloseDisplay(display);
+            display = nullptr;
+        }
     }
 };
 
@@ -466,7 +477,12 @@ std::function<void()> HandlePopupButton(SharedDisplay &shared, WindowState *stat
     if (picked >= 0) {
         Session *session = state->session;
         std::function<void()> onTrackPicked = state->onTrackPicked;
-        return [session, picked, onTrackPicked = std::move(onTrackPicked)] {
+        std::shared_ptr<WindowState::CallbackGate> gate = state->callbackGate;
+        return [session, picked, onTrackPicked = std::move(onTrackPicked), gate = std::move(gate)] {
+            std::lock_guard<std::mutex> gateLock(gate->mutex);
+            if (!gate->alive) {
+                return;
+            }
             session->RequestTrackNo(picked);
             if (onTrackPicked) {
                 onTrackPicked();
@@ -964,6 +980,10 @@ InfoWindow::~InfoWindow() {
     auto *state = static_cast<x11gui::WindowState *>(impl_);
     if (state == nullptr) {
         return;
+    }
+    {
+        std::lock_guard<std::mutex> gateLock(state->callbackGate->mutex);
+        state->callbackGate->alive = false;
     }
     std::thread threadToJoin;
     {
