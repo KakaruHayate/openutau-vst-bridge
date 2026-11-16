@@ -96,7 +96,12 @@ OpenUtau Bridge 的第一个正式版。写给直接使用它的人；安装与�
 - **未保存的 OpenUtau 工程连不上。** 会收到「请先保存工程」的提示，这是刻意的保护（未保存工程无法生成可靠的音频路径）。
 - **DAW 工程不保存 OpenUtau 内容。** 重开 DAW 工程后要重新连一次 OpenUtau。
 - **不接受 MIDI 输入。** 音符只能在 OpenUtau 里写。
-- macOS 的 Logic Pro / GarageBand 大概率扫不到插件（沙箱限制）。
+- **macOS 的包未签名。** Apple 芯片和沙箱化的宿主（Logic Pro、GarageBand）会拒绝加载，
+  Cubase / Nuendo 则提示签名无效；在本机对装好的那份重签一次可绕过 —— 见
+  [#8](https://github.com/KakaruHayate/openutau-vst-bridge/issues/8)。
+- **Flatpak 版宿主有自己私有的 `/tmp`。** Bitwig（及其它 Flathub 版）把插件广播到
+  OpenUtau 看不到的目录，DAW Integration 列表因此一直为空；放开 `/tmp` 或让两边共用
+  `TMPDIR` —— 见 [#16](https://github.com/KakaruHayate/openutau-vst-bridge/issues/16)。
 
 ## 质量验证
 

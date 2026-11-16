@@ -181,6 +181,29 @@ project, and **Connect** once more in DAW Integration.
 | Sound at the wrong position | Replay once after changing the DAW project's sample rate; rule out the DAW's own "project start" settings |
 | Export is silent | Make sure the plugin is 1.0.0 or newer; play through once in real time before exporting so audio gets delivered |
 | Disconnects after a while | Report with the logs and the DAW's buffer settings |
+| List stays empty and the DAW is a Flatpak app | The host keeps a private `/tmp` — see the two host-side notes below ([#16](https://github.com/KakaruHayate/openutau-vst-bridge/issues/16)) |
+| macOS: the plugin will not load, or the host calls its signature invalid | The bundle is unsigned — see the two host-side notes below ([#8](https://github.com/KakaruHayate/openutau-vst-bridge/issues/8)) |
+
+Two failures have nothing to do with the plugin: the host or the platform is in the way.
+
+- **macOS: the plugin will not load, and Cubase/Nuendo call the signature invalid.** The
+  bundles are built without an Apple Developer ID, so Apple silicon and the sandboxed hosts
+  refuse them. Sign the installed copy, then restart the host and let it rescan:
+
+  ```sh
+  xattr -cr "/Library/Audio/Plug-Ins/VST3/OpenUtau Bridge.vst3"
+  codesign --force --deep --sign - "/Library/Audio/Plug-Ins/VST3/OpenUtau Bridge.vst3"
+  ```
+
+  The CLAP build takes the same two commands without `--deep`. Background and status:
+  [#8](https://github.com/KakaruHayate/openutau-vst-bridge/issues/8).
+
+- **Linux: the DAW is a Flatpak app (Bitwig from Flathub, and others) and the list stays
+  empty.** A Flatpak application gets a private `/tmp`, so the plugin advertises itself
+  where OpenUtau, running outside the sandbox, cannot look — and the log is written there
+  too, which is why there is nothing to inspect either. Grant the host access to `/tmp`
+  (Flatseal → Filesystem → Other files → `/tmp/`), or give both sides the same `TMPDIR`.
+  Background: [#16](https://github.com/KakaruHayate/openutau-vst-bridge/issues/16).
 
 Attaching the log files above makes issues much easier to diagnose.
 
