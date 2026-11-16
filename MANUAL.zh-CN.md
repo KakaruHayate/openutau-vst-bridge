@@ -131,6 +131,26 @@ DAW 工程会记住每个实例的 `OpenUtau Track` 设置，但**不保存** Op
 | 声音出现在错误的时间位置 | DAW 工程采样率改动后重播一次；确认不是 DAW 的「时间起点」设置问题 |
 | 导出是空白 | 确认插件是 1.0.0 或更新；导出前先实时播放过一遍让音频传过去 |
 | 播一会儿断开 | 带上日志和 DAW 缓冲区设置反馈 |
+| 列表始终为空，且 DAW 是 Flatpak 版 | 宿主有私有的 `/tmp`，见下方「与宿主环境有关的两条」（[#16](https://github.com/KakaruHayate/openutau-vst-bridge/issues/16)） |
+| macOS 上插件加载不起来，或宿主提示签名无效 | 包未签名，见下方「与宿主环境有关的两条」（[#8](https://github.com/KakaruHayate/openutau-vst-bridge/issues/8)） |
+
+另有两类失败与插件本身无关，是宿主或平台挡住的：
+
+- **macOS：插件加载不起来，Cubase / Nuendo 提示签名无效。** 构建出来的包没有 Apple
+  Developer ID，整包没有有效签名，Apple 芯片和沙箱化的宿主都会直接拒绝。在本机对装好的
+  那份重新签一次即可，然后重启宿主让它重新扫描：
+
+  ```sh
+  xattr -cr "/Library/Audio/Plug-Ins/VST3/OpenUtau Bridge.vst3"
+  codesign --force --deep --sign - "/Library/Audio/Plug-Ins/VST3/OpenUtau Bridge.vst3"
+  ```
+
+  CLAP 版是同样两条命令，去掉 `--deep`。背景与进展：[#8](https://github.com/KakaruHayate/openutau-vst-bridge/issues/8)。
+
+- **Linux：DAW 是 Flatpak 版（Flathub 上的 Bitwig 等），列表始终为空。** Flatpak 应用有
+  自己私有的 `/tmp`，插件把自己广播到沙箱里那个目录，沙箱外的 OpenUtau 看不到；日志也写在
+  同一个目录里，所以外面同样什么都没留下、无从排查。给宿主放开 `/tmp`（Flatseal →
+  Filesystem → Other files → `/tmp/`），或者让两边用同一个 `TMPDIR`。背景：[#16](https://github.com/KakaruHayate/openutau-vst-bridge/issues/16)。
 
 反馈时附上上面的日志文件，问题最容易定位。
 

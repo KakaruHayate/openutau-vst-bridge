@@ -49,6 +49,35 @@ Built clap-first: one implementation, wrapped into each format by
 
 Pro Tools is out of scope: AAX requires an SDK available only under an Avid agreement.
 
+## Known host and platform issues
+
+Two setup failures come up often enough to write down. In both the plugin is fine and the
+obstacle is the host or the platform, so neither can be fixed in this repository.
+
+**macOS: Cubase/Nuendo report an invalid signature, and Logic Pro / GarageBand never scan
+the plugin at all.** The macOS bundles are built without an Apple Developer ID, so the
+`.vst3` bundle as a whole carries no valid seal; Apple silicon refuses to load it, and the
+sandboxed hosts refuse it harder. Signing the installed copy locally is enough — no
+developer account involved:
+
+```sh
+xattr -cr "/Library/Audio/Plug-Ins/VST3/OpenUtau Bridge.vst3"
+codesign --force --deep --sign - "/Library/Audio/Plug-Ins/VST3/OpenUtau Bridge.vst3"
+```
+
+Then restart the host and let it rescan. The CLAP build takes the same two commands, minus
+`--deep`. Background and status: [#8](https://github.com/KakaruHayate/openutau-vst-bridge/issues/8).
+
+**Linux with a Flatpak host (Bitwig from Flathub and friends): OpenUtau finds no plugin.**
+The DAW Integration list stays empty even though the host's log shows the bridge listening
+on a port, and neither `<temp>/OpenUtau/PluginServers/` nor `<temp>/OpenUtau/bridge-*.log`
+appears — the log lives in that same directory, so there is nothing outside to inspect
+either. A Flatpak application gets a private `/tmp`, so the plugin advertises itself into a
+directory OpenUtau, running outside the sandbox, cannot see. Either grant the host access
+to `/tmp` (Flatseal → Filesystem → Other files → `/tmp/`), or give both sides the same
+`TMPDIR`: the plugin reads `TMPDIR` before falling back to `/tmp`, and the directory is
+only useful if OpenUtau sees it too. Background: [#16](https://github.com/KakaruHayate/openutau-vst-bridge/issues/16).
+
 ## Documentation
 
 - English: [User Manual](MANUAL.md) · [Release Notes](RELEASE.md) · this README ·

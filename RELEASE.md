@@ -143,7 +143,14 @@ Every platform ships the same set:
 - **DAW projects do not store OpenUtau content.** After reopening a DAW project,
   reconnect OpenUtau once.
 - **No MIDI input.** Notes are written in OpenUtau only.
-- Logic Pro / GarageBand on macOS most likely will not scan the plugin (sandboxing).
+- **The macOS bundles are unsigned.** Apple silicon and the sandboxed hosts (Logic Pro,
+  GarageBand) refuse to load them, and Cubase/Nuendo report an invalid signature; signing
+  the installed copy locally works around it — see
+  [#8](https://github.com/KakaruHayate/openutau-vst-bridge/issues/8).
+- **A Flatpak host keeps its own private `/tmp`.** Bitwig (and any other Flathub build)
+  advertises the plugin into a directory OpenUtau cannot see, so the DAW Integration list
+  stays empty; grant `/tmp` or share `TMPDIR` — see
+  [#16](https://github.com/KakaruHayate/openutau-vst-bridge/issues/16).
 
 ## Quality verification
 
