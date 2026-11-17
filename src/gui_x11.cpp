@@ -33,12 +33,15 @@
 #include <X11/Xft/Xft.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
+#include <atomic>
 #include <sys/select.h>
 #include <thread>
 #include <vector>
@@ -91,8 +94,14 @@ struct Row {
 /// main thread are either atomic or guarded by popupMutex; Xlib calls themselves are
 /// serialized by XInitThreads.
 struct WindowState {
+    struct CallbackGate {
+        std::mutex mutex;
+        bool alive = true;
+    };
+
     Session *session = nullptr;
     std::function<void()> onTrackPicked;
+    std::shared_ptr<CallbackGate> callbackGate = std::make_shared<CallbackGate>();
     Display *display = nullptr;
     int screen = 0;
     Colormap colormap = 0;
@@ -102,22 +111,21 @@ struct WindowState {
     XftDraw *draw = nullptr;
     XftDraw *popupDraw = nullptr;
     XftFont *font = nullptr;
+    Visual *visual = nullptr;
     XftColor background, listBackground, selection, border, textStrong, textDim, accent;
+    bool colorsAllocated = false;
     UiState shown;  // What the last paint drew, so an unchanged state costs one copy.
     std::vector<std::string> comboLabels;  // What the dropdown currently lists.
     std::string title = "OpenUtau Bridge";
     Atom deleteAtom = 0;  // WM_DELETE_WINDOW: the floating window's close box.
 
-    // The event thread below: started once the window exists, joined at destruction.
-    // Atomic because the destructor stops it from the main thread; parent/owner/floating
-    // are atomic for the same reason — the main thread writes them in EmbedInto/OwnTo
-    // while the event thread reads and clears them in HideWindow (the floating window's
-    // close box can race the host's hide()).
-    std::atomic<bool> running{false};
-    std::thread eventThread;
+    // parent/owner/floating are atomic because the main thread writes them in
+    // EmbedInto/OwnTo while the event thread reads and clears them in HideWindow
+    // (the floating window's close box can race the host's hide()).
     std::atomic<Window> parent{0};  // The host window we are embedded into, if any.
     std::atomic<Window> owner{0};   // The host window we are transient to, if any.
     std::atomic<bool> floating{true};
+    bool nativeCreated = false;
 
     // The popup's world. popupMutex guards popupOpen and the popup's map/unmap
     // transitions, because Hide() arrives on the main thread while the event thread may
@@ -313,31 +321,67 @@ void SyncTracks(WindowState *state) {
     }
 }
 
-/// Caller holds popupMutex.
-void ClosePopupLocked(WindowState *state) {
+struct SharedDisplay {
+    std::mutex mutex;
+    Display *display = nullptr;
+    int screen = 0;
+    Colormap colormap = 0;
+    Visual *visual = nullptr;
+    Window root = 0;
+    std::atomic<bool> running{false};
+    std::thread eventThread;
+    std::vector<WindowState *> windows;
+    WindowState *activePopup = nullptr;
+
+    ~SharedDisplay() {
+        running = false;
+        if (eventThread.joinable()) {
+            eventThread.join();
+        }
+        if (display != nullptr) {
+            XCloseDisplay(display);
+            display = nullptr;
+        }
+    }
+};
+
+SharedDisplay &GetSharedDisplay() {
+    static SharedDisplay shared;
+    return shared;
+}
+
+/// Caller holds shared.mutex and state->popupMutex.
+void ClosePopupLocked(SharedDisplay &shared, WindowState *state) {
     if (!state->popupOpen) {
         return;
     }
-    XUngrabPointer(state->display, CurrentTime);  // No-op if the grab was already gone.
+    if (shared.activePopup == state) {
+        XUngrabPointer(state->display, CurrentTime);  // No-op if the grab was already gone.
+        shared.activePopup = nullptr;
+    }
     XUnmapWindow(state->display, state->popup);
     state->popupOpen = false;
     XFlush(state->display);
 }
 
-void ClosePopup(WindowState *state) {
+/// Caller holds shared.mutex.
+void ClosePopup(SharedDisplay &shared, WindowState *state) {
     std::lock_guard<std::mutex> lock(state->popupMutex);
-    ClosePopupLocked(state);
+    ClosePopupLocked(shared, state);
 }
 
 /// Opens the dropped list under the combobox — or above it when the screen ends
 /// first. A pointer grab routes every click to the popup until it closes, which is
-/// how "click elsewhere to dismiss" comes for free. Event thread.
-void OpenPopup(WindowState *state) {
+/// how "click elsewhere to dismiss" comes for free. Event thread; caller holds shared.mutex.
+void OpenPopup(SharedDisplay &shared, WindowState *state) {
     Display *display = state->display;
     Window root = DefaultRootWindow(display);
     std::lock_guard<std::mutex> lock(state->popupMutex);
     if (state->popupOpen || state->comboLabels.empty()) {
         return;
+    }
+    if (shared.activePopup != nullptr && shared.activePopup != state) {
+        ClosePopup(shared, shared.activePopup);
     }
     int count = static_cast<int>(state->comboLabels.size());
     int items = std::min(count, kPopupMaxItems);
@@ -362,14 +406,20 @@ void OpenPopup(WindowState *state) {
     XMoveResizeWindow(display, state->popup, comboBottomX, y, state->popupWidth,
                       state->popupHeight);
     XMapRaised(display, state->popup);
-    XGrabPointer(display, state->popup, True, ButtonPressMask | ButtonReleaseMask,
-                 GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
+    if (XGrabPointer(display, state->popup, False, ButtonPressMask | ButtonReleaseMask,
+                     GrabModeAsync, GrabModeAsync, None, None, CurrentTime) != GrabSuccess) {
+        XUnmapWindow(display, state->popup);
+        XFlush(display);
+        return;
+    }
+    shared.activePopup = state;
     state->popupOpen = true;
     PaintPopup(state);
 }
 
 /// A press on the main window: the combobox toggles the list, anything else closes it.
-void HandleMainButton(WindowState *state, const XButtonEvent &event) {
+/// Caller holds shared.mutex.
+void HandleMainButton(SharedDisplay &shared, WindowState *state, const XButtonEvent &event) {
     bool onCombo = event.x >= kMargin && event.x < static_cast<int>(kWindowWidth) - kMargin &&
                    event.y >= kComboY && event.y < kComboY + kComboHeight;
     bool open = false;
@@ -379,23 +429,25 @@ void HandleMainButton(WindowState *state, const XButtonEvent &event) {
     }
     if (onCombo) {
         if (open) {
-            ClosePopup(state);
+            ClosePopup(shared, state);
         } else {
-            OpenPopup(state);
+            OpenPopup(shared, state);
         }
     } else if (open) {
-        ClosePopup(state);
+        ClosePopup(shared, state);
     }
 }
 
 /// A press while the list is dropped. The grab makes the popup the event target for
 /// every click, inside or out: inside, it is a pick; outside, a dismissal.
-void HandlePopupButton(WindowState *state, const XButtonEvent &event) {
+/// Caller holds shared.mutex.
+std::function<void()> HandlePopupButton(SharedDisplay &shared, WindowState *state,
+                                        const XButtonEvent &event) {
     if (event.button == Button4 || event.button == Button5) {
         // Wheel scroll over the list — only ever reachable when the list was clipped.
         std::lock_guard<std::mutex> lock(state->popupMutex);
         if (!state->popupOpen) {
-            return;
+            return {};
         }
         int visible = state->popupHeight / kComboItemHeight;
         int maxScroll =
@@ -403,40 +455,49 @@ void HandlePopupButton(WindowState *state, const XButtonEvent &event) {
         int delta = event.button == Button5 ? 1 : -1;
         state->popupScroll = std::clamp(state->popupScroll + delta, 0, maxScroll);
         PaintPopup(state);
-        return;
+        return {};
     }
 
     int picked = -1;
     {
         std::lock_guard<std::mutex> lock(state->popupMutex);
         if (!state->popupOpen) {
-            return;
+            return {};
         }
         bool inside = event.x >= 0 && event.y >= 0 && event.x < state->popupWidth &&
                       event.y < state->popupHeight;
         int item = state->popupScroll + event.y / kComboItemHeight;
         if (inside && item >= 0 && item < static_cast<int>(state->comboLabels.size())) {
             picked = item;
-            ClosePopupLocked(state);
+            ClosePopupLocked(shared, state);
         } else if (!inside) {
-            ClosePopupLocked(state);
+            ClosePopupLocked(shared, state);
         }
     }
     if (picked >= 0) {
-        // The session's routing change is atomic; the host nudge is the one call that
-        // leaves the event thread — see the file header for why that is accepted.
-        state->session->RequestTrackNo(picked);
-        if (state->onTrackPicked) {
-            state->onTrackPicked();
-        }
+        Session *session = state->session;
+        std::function<void()> onTrackPicked = state->onTrackPicked;
+        std::shared_ptr<WindowState::CallbackGate> gate = state->callbackGate;
+        return [session, picked, onTrackPicked = std::move(onTrackPicked), gate = std::move(gate)] {
+            std::lock_guard<std::mutex> gateLock(gate->mutex);
+            if (!gate->alive) {
+                return;
+            }
+            session->RequestTrackNo(picked);
+            if (onTrackPicked) {
+                onTrackPicked();
+            }
+        };
     }
+    return {};
 }
 
 /// The shared hide path: close the list, detach from whatever we were embedded in,
 /// unmap. Runs on the main thread (gui hide) and on the event thread (the floating
 /// window's close box); both end in the same place, and Xlib serializes the calls.
-void HideWindow(WindowState *state) {
-    ClosePopup(state);
+/// Caller holds shared.mutex.
+void HideWindowLocked(SharedDisplay &shared, WindowState *state) {
+    ClosePopup(shared, state);
     Display *display = state->display;
     if (state->parent != 0) {
         XReparentWindow(display, state->window, DefaultRootWindow(display), 0, 0);
@@ -450,87 +511,160 @@ void HideWindow(WindowState *state) {
 /// One select()-bounded round of the event loop: drain the queue, and when the queue
 /// stayed empty for a tick, repaint at 4 Hz — the timer the Win32 backend gets from
 /// SetTimer and Cocoa from NSTimer, built here out of the connection's file descriptor.
-void EventLoop(WindowState *state) {
-    Display *display = state->display;
+void EventLoop(SharedDisplay *shared) {
+    using Clock = std::chrono::steady_clock;
+    const auto tickInterval = std::chrono::milliseconds(kTickMs);
+    auto nextRefresh = Clock::now() + tickInterval;
+    Display *display = shared->display;
     int fd = ConnectionNumber(display);
-    while (state->running) {
+    while (shared->running) {
+        auto now = Clock::now();
+        auto remaining = now < nextRefresh ? nextRefresh - now : Clock::duration::zero();
+        auto remainingUs = std::chrono::duration_cast<std::chrono::microseconds>(remaining).count();
         fd_set readable;
         FD_ZERO(&readable);
         FD_SET(fd, &readable);
-        timeval timeout{kTickMs / 1000, static_cast<suseconds_t>((kTickMs % 1000) * 1000)};
-        int ready = select(fd + 1, &readable, nullptr, nullptr, &timeout);
-        if (!state->running) {
+        timeval timeout{static_cast<time_t>(remainingUs / 1000000),
+                        static_cast<suseconds_t>(remainingUs % 1000000)};
+        select(fd + 1, &readable, nullptr, nullptr, &timeout);
+        if (!shared->running) {
             return;
         }
-        while (state->running && XPending(display) > 0) {
-            XEvent event;
-            XNextEvent(display, &event);
-            switch (event.type) {
-                case Expose:
-                    if (event.xexpose.window == state->window) {
-                        Paint(state);
-                    } else if (event.xexpose.window == state->popup) {
-                        std::lock_guard<std::mutex> lock(state->popupMutex);
-                        if (state->popupOpen) {
-                            PaintPopup(state);
-                        }
-                    }
-                    break;
-                case ButtonPress:
-                    if (event.xbutton.window == state->popup) {
-                        HandlePopupButton(state, event.xbutton);
-                    } else if (event.xbutton.window == state->window) {
-                        HandleMainButton(state, event.xbutton);
-                    }
-                    break;
-                case ClientMessage:
-                    if (event.xclient.window == state->window &&
-                        static_cast<Atom>(event.xclient.data.l[0]) == state->deleteAtom) {
-                        // A floating window closed by its user hides rather than
-                        // destroys: the host owns the gui's lifetime, and it was not
-                        // asked for destroy().
-                        HideWindow(state);
-                    }
-                    break;
-                default:
-                    break;
+        std::vector<std::function<void()>> pendingCallbacks;
+        {
+            std::lock_guard<std::mutex> lock(shared->mutex);
+            if (!shared->running) {
+                return;
             }
-        }
-        if (ready == 0) {
-            // Unconditional: copy, sync and repaint at 4 Hz, self-healing whatever the
-            // X server discarded — the same reasoning as the Win32 backend's timer.
-            state->shown = state->session->UiCopy();
-            {
-                std::lock_guard<std::mutex> lock(state->popupMutex);
-                // While the list is dropped open, leave the labels alone: the user is
-                // browsing, and a rebuild under the cursor would move the items.
-                if (!state->popupOpen) {
-                    SyncTracks(state);
+            while (shared->running && XPending(display) > 0) {
+                XEvent event;
+                XNextEvent(display, &event);
+                Window target = event.xany.window;
+                WindowState *state = nullptr;
+                for (WindowState *candidate : shared->windows) {
+                    if (candidate->window == target || candidate->popup == target) {
+                        state = candidate;
+                        break;
+                    }
+                }
+                if (state == nullptr) {
+                    continue;
+                }
+                switch (event.type) {
+                    case Expose:
+                        if (event.xexpose.window == state->window) {
+                            Paint(state);
+                        } else if (event.xexpose.window == state->popup) {
+                            std::lock_guard<std::mutex> popupLock(state->popupMutex);
+                            if (state->popupOpen) {
+                                PaintPopup(state);
+                            }
+                        }
+                        break;
+                    case ButtonPress:
+                        if (event.xbutton.window == state->popup) {
+                            if (auto cb = HandlePopupButton(*shared, state, event.xbutton)) {
+                                pendingCallbacks.push_back(std::move(cb));
+                            }
+                        } else if (event.xbutton.window == state->window) {
+                            HandleMainButton(*shared, state, event.xbutton);
+                        }
+                        break;
+                    case ClientMessage:
+                        if (event.xclient.window == state->window &&
+                            static_cast<Atom>(event.xclient.data.l[0]) == state->deleteAtom) {
+                            // A floating window closed by its user hides rather than
+                            // destroys: the host owns the gui's lifetime, and it was not
+                            // asked for destroy().
+                            HideWindowLocked(*shared, state);
+                        }
+                        break;
+                    default:
+                        break;
                 }
             }
-            Paint(state);
+        }
+        for (auto &cb : pendingCallbacks) {
+            cb();
+        }
+        if (Clock::now() >= nextRefresh) {
+            nextRefresh = Clock::now() + tickInterval;
+            // Unconditional: copy, sync and repaint at 4 Hz, self-healing whatever the
+            // X server discarded — the same reasoning as the Win32 backend's timer.
+            std::vector<WindowState *> snapshot;
             {
-                std::lock_guard<std::mutex> lock(state->popupMutex);
-                if (state->popupOpen) {
-                    PaintPopup(state);
+                std::lock_guard<std::mutex> lock(shared->mutex);
+                snapshot = shared->windows;
+            }
+            for (WindowState *candidate : snapshot) {
+                std::lock_guard<std::mutex> lock(shared->mutex);
+                if (!shared->running) {
+                    return;
+                }
+                if (std::find(shared->windows.begin(), shared->windows.end(), candidate) ==
+                    shared->windows.end()) {
+                    continue;
+                }
+                candidate->shown = candidate->session->UiCopy();
+                {
+                    std::lock_guard<std::mutex> popupLock(candidate->popupMutex);
+                    // While the list is dropped open, leave the labels alone: the user is
+                    // browsing, and a rebuild under the cursor would move the items.
+                    if (!candidate->popupOpen) {
+                        SyncTracks(candidate);
+                    }
+                }
+                Paint(candidate);
+                {
+                    std::lock_guard<std::mutex> popupLock(candidate->popupMutex);
+                    if (candidate->popupOpen) {
+                        PaintPopup(candidate);
+                    }
                 }
             }
         }
     }
 }
 
+void FreeColors(Display *display, Visual *visual, Colormap colormap, WindowState *state) {
+    if (!state->colorsAllocated) {
+        return;
+    }
+    XftColorFree(display, visual, colormap, &state->background);
+    XftColorFree(display, visual, colormap, &state->listBackground);
+    XftColorFree(display, visual, colormap, &state->selection);
+    XftColorFree(display, visual, colormap, &state->border);
+    XftColorFree(display, visual, colormap, &state->textStrong);
+    XftColorFree(display, visual, colormap, &state->textDim);
+    XftColorFree(display, visual, colormap, &state->accent);
+    state->colorsAllocated = false;
+}
+
 /// Builds everything X-side from scratch. Used at creation; unlike Windows, an X window
 /// does not die behind our back when a host reloads its UI, so there is no rebuild path.
 bool CreateNative(WindowState *state) {
-    Display *display = XOpenDisplay(nullptr);
-    if (display == nullptr) {
-        return false;
+    if (state->nativeCreated) {
+        return state->alive();
     }
+    SharedDisplay &shared = GetSharedDisplay();
+    std::lock_guard<std::mutex> lock(shared.mutex);
+    if (shared.display == nullptr) {
+        shared.display = XOpenDisplay(nullptr);
+        if (shared.display == nullptr) {
+            return false;
+        }
+        shared.screen = DefaultScreen(shared.display);
+        shared.colormap = DefaultColormap(shared.display, shared.screen);
+        shared.visual = DefaultVisual(shared.display, shared.screen);
+        shared.root = DefaultRootWindow(shared.display);
+    }
+    Display *display = shared.display;
     state->display = display;
-    state->screen = DefaultScreen(display);
-    state->colormap = DefaultColormap(display, state->screen);
-    Visual *visual = DefaultVisual(display, state->screen);
-    Window root = DefaultRootWindow(display);
+    state->screen = shared.screen;
+    state->colormap = shared.colormap;
+    Visual *visual = shared.visual;
+    state->visual = visual;
+    Window root = shared.root;
 
     const auto alloc = [&](const Rgb &rgb, XftColor *color) {
         XRenderColor render{static_cast<unsigned short>((rgb.r << 8) | rgb.r),
@@ -538,14 +672,28 @@ bool CreateNative(WindowState *state) {
                             static_cast<unsigned short>((rgb.b << 8) | rgb.b), 0xFFFF};
         return XftColorAllocValue(display, visual, state->colormap, &render, color) != 0;
     };
-    if (!alloc(kBackground, &state->background) || !alloc(kListBackground, &state->listBackground) ||
-        !alloc(kSelection, &state->selection) || !alloc(kBorder, &state->border) ||
-        !alloc(kTextStrong, &state->textStrong) || !alloc(kTextDim, &state->textDim) ||
-        !alloc(kAccent, &state->accent)) {
-        XCloseDisplay(display);
-        state->display = nullptr;
-        return false;
+    struct ColorSlot {
+        Rgb rgb;
+        XftColor *color;
+    };
+    const ColorSlot slots[] = {
+        {kBackground, &state->background},     {kListBackground, &state->listBackground},
+        {kSelection, &state->selection},       {kBorder, &state->border},
+        {kTextStrong, &state->textStrong},     {kTextDim, &state->textDim},
+        {kAccent, &state->accent},
+    };
+    size_t allocatedCount = 0;
+    for (const ColorSlot &slot : slots) {
+        if (!alloc(slot.rgb, slot.color)) {
+            for (size_t i = 0; i < allocatedCount; i++) {
+                XftColorFree(display, visual, state->colormap, slots[i].color);
+            }
+            state->display = nullptr;
+            return false;
+        }
+        allocatedCount++;
     }
+    state->colorsAllocated = true;
 
     // The font: 10 point of the default sans. Track names are arbitrary UTF-8, which is
     // the whole reason for Xft; without fontconfig there is no window.
@@ -554,7 +702,7 @@ bool CreateNative(WindowState *state) {
         state->font = XftFontOpenName(display, state->screen, "sans-serif-10");
     }
     if (state->font == nullptr) {
-        XCloseDisplay(display);
+        FreeColors(display, visual, state->colormap, state);
         state->display = nullptr;
         return false;
     }
@@ -564,7 +712,8 @@ bool CreateNative(WindowState *state) {
                             state->background.pixel);
     if (state->window == 0) {
         XftFontClose(display, state->font);
-        XCloseDisplay(display);
+        FreeColors(display, visual, state->colormap, state);
+        state->font = nullptr;
         state->display = nullptr;
         return false;
     }
@@ -634,8 +783,9 @@ bool CreateNative(WindowState *state) {
         }
         if (state->font != nullptr) {
             XftFontClose(display, state->font);
+            state->font = nullptr;
         }
-        XCloseDisplay(display);
+        FreeColors(display, visual, state->colormap, state);
         state->display = nullptr;
         state->window = 0;
         state->popup = 0;
@@ -644,10 +794,14 @@ bool CreateNative(WindowState *state) {
 
     // The first frame, before anything can map the window, and then the event thread
     // that keeps it alive.
+    state->nativeCreated = true;
     SyncTracks(state);
     Paint(state);
-    state->running = true;
-    state->eventThread = std::thread(EventLoop, state);
+    shared.windows.push_back(state);
+    if (!shared.running) {
+        shared.running = true;
+        shared.eventThread = std::thread(EventLoop, &shared);
+    }
     return true;
 }
 
@@ -703,10 +857,11 @@ const clap_plugin_gui_t &GuiTable() {
             *isFloating = true;
             return true;
         },
-        // create — the window already exists per instance; a host that embeds re-parents
-        // it in set_parent below.
+        // create — lazily creates the X11 window on first use so scanning or headless
+        // hosts never open an X11 display or Xft resources.
         +[](const clap_plugin_t *plugin, const char *, bool) {
-            return Instance(plugin) != nullptr;
+            InfoWindow *info = Instance(plugin);
+            return info != nullptr && info->EnsureAlive();
         },
         // destroy — only hides; the window itself dies when the plugin is destroyed.
         +[](const clap_plugin_t *plugin) {
@@ -809,20 +964,13 @@ void GuiUnregister(const clap_plugin_t *plugin) {
 InfoWindow *CreateInfoWindow(Session *session, std::function<void()> onTrackPicked) {
     using x11gui::WindowState;
     // Our event thread touches the same display connection the main thread uses; Xlib
-    // must be told once, before the first display opens, that this is going to happen.
+    // must be told once, before any display opens, that this is going to happen.
     static std::once_flag threadsInit;
     std::call_once(threadsInit, [] { XInitThreads(); });
-
     auto *state = new WindowState();
     state->session = session;
     state->onTrackPicked = std::move(onTrackPicked);
     state->shown = session->UiCopy();
-    if (!x11gui::CreateNative(state)) {
-        // Null means no gui — the plugin stays a degraded but working plugin, exactly
-        // like the stub path.
-        delete state;
-        return nullptr;
-    }
     auto *window = new InfoWindow();
     window->impl_ = state;
     return window;
@@ -833,35 +981,51 @@ InfoWindow::~InfoWindow() {
     if (state == nullptr) {
         return;
     }
-    if (state->eventThread.joinable()) {
-        state->running = false;
-        state->eventThread.join();  // The select timeout wakes it within one tick.
+    {
+        std::lock_guard<std::mutex> gateLock(state->callbackGate->mutex);
+        state->callbackGate->alive = false;
     }
-    Display *display = state->display;
-    if (display != nullptr) {
-        x11gui::ClosePopup(state);
-        // Free the draws before their windows: an XftDraw wraps a Render picture tied
-        // to the drawable, and freeing a picture the server already released with its
-        // window raises a BadPicture error, whose default handler ends the process.
-        if (state->popupDraw != nullptr) {
-            XftDrawDestroy(state->popupDraw);
+    std::thread threadToJoin;
+    {
+        x11gui::SharedDisplay &shared = x11gui::GetSharedDisplay();
+        std::lock_guard<std::mutex> lock(shared.mutex);
+        auto it = std::find(shared.windows.begin(), shared.windows.end(), state);
+        if (it != shared.windows.end()) {
+            shared.windows.erase(it);
         }
-        if (state->draw != nullptr) {
-            XftDrawDestroy(state->draw);
+        Display *display = state->display;
+        if (display != nullptr) {
+            x11gui::ClosePopup(shared, state);
+            // Free the draws before their windows: an XftDraw wraps a Render picture tied
+            // to the drawable, and freeing a picture the server already released with its
+            // window raises a BadPicture error, whose default handler ends the process.
+            if (state->popupDraw != nullptr) {
+                XftDrawDestroy(state->popupDraw);
+            }
+            if (state->draw != nullptr) {
+                XftDrawDestroy(state->draw);
+            }
+            if (state->popup != 0) {
+                XDestroyWindow(display, state->popup);
+            }
+            if (state->window != 0) {
+                XDestroyWindow(display, state->window);
+            }
+            if (state->gc != nullptr) {
+                XFreeGC(display, state->gc);
+            }
+            if (state->font != nullptr) {
+                XftFontClose(display, state->font);
+            }
+            x11gui::FreeColors(display, state->visual, state->colormap, state);
         }
-        if (state->popup != 0) {
-            XDestroyWindow(display, state->popup);
+        if (shared.windows.empty() && shared.running) {
+            shared.running = false;
+            threadToJoin = std::move(shared.eventThread);
         }
-        if (state->window != 0) {
-            XDestroyWindow(display, state->window);
-        }
-        if (state->gc != nullptr) {
-            XFreeGC(display, state->gc);
-        }
-        if (state->font != nullptr) {
-            XftFontClose(display, state->font);
-        }
-        XCloseDisplay(display);  // The XftColors go with the connection.
+    }
+    if (threadToJoin.joinable()) {
+        threadToJoin.join();  // The select timeout wakes it within one tick.
     }
     delete state;
 }
@@ -870,9 +1034,10 @@ const clap_plugin_gui_t *InfoWindow::Extension() const { return &GuiTable(); }
 
 bool InfoWindow::EnsureAlive() {
     auto *state = static_cast<x11gui::WindowState *>(impl_);
-    // An X window is not the host's to destroy — the only teardown is ours — so alive
-    // here is simply whether the window was ever built.
-    return state != nullptr && state->alive();
+    if (state == nullptr) {
+        return false;
+    }
+    return x11gui::CreateNative(state);
 }
 
 void InfoWindow::Show() {
@@ -892,9 +1057,11 @@ void InfoWindow::Hide() {
     if (state == nullptr || !state->alive()) {
         return;
     }
+    x11gui::SharedDisplay &shared = x11gui::GetSharedDisplay();
+    std::lock_guard<std::mutex> lock(shared.mutex);
     // Detach before hiding, as on Windows: while the editor is closed the window must
     // not remain a child of host UI that a reload may destroy.
-    x11gui::HideWindow(state);
+    x11gui::HideWindowLocked(shared, state);
 }
 
 void InfoWindow::EmbedInto(void *parent) {

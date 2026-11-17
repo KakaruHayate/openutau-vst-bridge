@@ -34,7 +34,7 @@ public:
 
     void Show();  ///< Lays out a fresh snapshot and makes the editor visible.
     void Hide();  ///< Hides the editor; the object outlives the call.
-    bool EnsureAlive(); ///< Recreates the native window if the host destroyed it behind our back.
+    bool EnsureAlive(); ///< Creates the native window on demand or recreates it if destroyed.
     void EmbedInto(void *parent);    ///< Attaches the editor to a host's native parent handle.
     void OwnTo(void *owner);         ///< Floating mode: takes the host window as owner.
     void Retitle(const char *title); ///< Floating mode: applies the host's suggested title.
