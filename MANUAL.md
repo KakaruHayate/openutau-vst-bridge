@@ -115,8 +115,9 @@ project has no reliable audio path, so nothing it delivers can be guaranteed.
 
 ### The plugin window
 
-Double-click the plugin to open it (native on Windows and macOS; Linux has no plugin
-window yet — switch tracks from the DAW's generic parameter panel). It shows:
+Double-click the plugin to open it (native on Windows and macOS, plain Xlib/Xft on Linux;
+with no X11 available — a build configured without it, or a Wayland session without
+XWayland — there is no window and switching stays in the DAW's parameter panel). It shows:
 
 - **Track dropdown** (top): which OpenUtau track this instance plays (names only; singer
   and engine are on the info rows below);

@@ -84,7 +84,7 @@ OpenUtau Bridge 是一个**乐器插件**（VST3 / CLAP），装在 DAW 里。�
 
 ### 插件窗口
 
-双击插件打开（Windows 与 macOS 有原生窗口；Linux 暂无插件窗口，切轨可用 DAW 的通用参数面板）。显示：
+双击插件打开（Windows 与 macOS 为原生实现，Linux 为纯 Xlib/Xft；没有 X11 可用时——构建时没找到、或纯 Wayland 会话没装 XWayland——就没有窗口，切轨仍走 DAW 的通用参数面板）。显示：
 
 - **轨道下拉框**（顶部）：选择本实例播 OpenUtau 的哪条音轨（只列轨名，歌手与引擎看下面的信息行）；
 - **连接状态与端口**；

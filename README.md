@@ -27,8 +27,9 @@ one and you must change the other.**
 - **Bounce-friendly offline rendering (v1.0).** An offline (non-realtime) render waits
   for missing part audio instead of printing holes; real-time playback never waits.
 - **Info window (v1.1).** A small window showing project name, saved state, connection
-  state, tempo, transport and the track list with this instance's track marked. Windows
-  for now; other platforms simply advertise no gui.
+  state, tempo, transport and the track list with this instance's track marked. Native on
+  Windows and macOS, plain Xlib/Xft on Linux — where the release builds ship it, and a
+  build without X11/Xft dev files simply advertises no gui instead.
 - **Playhead sync (v1.1).** The DAW's transport position is sent one-way to OpenUtau —
   immediately on state changes, every 100 ms while playing, and on scrubs of more than
   50 ms while parked. OpenUtau's own playhead follows the DAW, never the reverse.
@@ -143,7 +144,9 @@ bare DLL. Both load in most hosts, but only the folder is what the current VST3 
 src/
   bridge_entry.*    the three symbols a format module needs, and the exported clap_entry
   plugin.cpp        descriptor, factory, parameters, state, gui hookup, and the CLAP process callback
-  gui.h gui_win32.cpp the info window: CLAP gui extension and its Win32 backend
+  gui.h             the info window: the CLAP gui extension every backend implements
+  gui_win32.cpp gui_cocoa.mm gui_x11.cpp   its three native backends; gui_stub.cpp stands in
+                    where none can be built, leaving the plugin without a gui extension
   transport.h       where a block sits on the host's timeline
   session.*         the worker thread that owns the connection and publishes snapshots
   socket.* stream.h the listener and the byte streams over it

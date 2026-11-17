@@ -1,6 +1,48 @@
 # OpenUtau Bridge Release Notes
 
-**Version 1.0.3 · Protocol v1.2 · 2026-11-07**
+**Version 1.1.0 · Protocol v1.2 · 2026-11-17**
+
+1.1.0 gives Linux the plugin window Windows and macOS already had (PR #15, by linux-leo),
+and the work that mattered turned out to be the crash the window brought with it.
+
+Loading a second instance — which is every plug-in scanner, and any host keeping more than
+one — used to end in `X Error of failed request: BadLength`. Each instance opened its own
+X11 display during `PluginInit`, before any host had asked for a window, and closed it when
+the instance died. Closing ran libXft's teardown after libXrender's, so libXrender put the
+dying `Display` back into its global display list holding a freed `XExtCodes`; the next
+`XOpenDisplay` to reuse that heap address sent a malformed request, and the host or scanner
+died with it.
+
+So the connection is now opened once, lazily, and shared:
+
+- **Nothing X11 happens before a window is asked for.** Scanning a plugin, hosting it without
+  an editor, or simply having it loaded opens no display, no fonts and no event thread. The
+  window is built on the first `clap_plugin_gui::create()`.
+- **One display and one event thread per process.** The thread stops when the last window goes
+  away; the display is not reopened, so nothing re-enters libXrender's list.
+- **One dropdown at a time, across instances.** Opening it in a second instance closes the
+  first, and a pointer grab that cannot be taken closes the list rather than leaving it stuck
+  on screen.
+- **The 4 Hz repaint runs on a deadline**, not on an idle connection, so a wheel spinning over
+  one instance's track list no longer holds back another instance's info rows — and the host
+  notification a track pick sends (`request_flush`) now runs outside the gui's lock, so a host
+  that answers it synchronously cannot deadlock the event thread.
+
+**The Linux window is the newest and least proven backend.** It is plain Xlib with Xft text:
+no toolkit, and no fallback to one. It is compiled in when X11 and Xft development files are
+found at configure time, as they are in the release builds; a build or a Wayland-only session
+without them still loads and still works, just without a window, and the track stays
+switchable from the host's own parameter panel. Wayland sessions reach the window through
+XWayland. Treat it as a feature with rough edges — reports that name the host are what will
+settle them.
+
+The wire format is unchanged (protocol v1.2), so 1.1.0 pairs with every OpenUtau build that
+speaks v1.1 or later. The macOS and Linux bundles are still unsigned; the re-signing and
+Flatpak notes now in `README.md` apply to this release as they did to 1.0.3.
+
+---
+
+## 1.0.3 · 2026-11-07
 
 1.0.3 is a fix for one project shape that could take OpenUtau down: a DAW project carrying a
 **tempo map**, especially a gradual tempo change. The host reports a new tempo every block
@@ -77,8 +119,8 @@ dragging wav files.
 It is **not** the "OpenUtau inside the DAW window" kind of integration (the Synthesizer V
 / ARA approach). OpenUtau stays its own window; the plugin in the DAW only does
 "connect, receive audio, place it at the right position". So there is no editor UI — the
-plugin ships with a read-only **info window** and a **track-switch dropdown** (Windows /
-macOS); double-click the plugin to open it.
+plugin ships with a read-only **info window** and a **track-switch dropdown** (Windows,
+macOS, Linux); double-click the plugin to open it.
 
 ## Package contents
 
@@ -102,9 +144,9 @@ Every platform ships the same set:
 - **Multi-instance, multi-track**: one instance per DAW track; the `OpenUtau Track`
   parameter (or the dropdown in the plugin window) selects which OpenUtau track each
   instance answers for, with DAW automation support.
-- **Plugin window** (Windows / macOS): track-switch dropdown, connection state and port,
-  project name and saved state, the selected track's singer and render engine, tempo, and
-  transport. Fixed dark color scheme.
+- **Plugin window** (Windows / macOS / Linux): track-switch dropdown, connection state and
+  port, project name and saved state, the selected track's singer and render engine, tempo,
+  and transport. Fixed dark color scheme.
 - **Playhead sync**: the DAW's playhead drives OpenUtau one-way — transport changes sync
   immediately, playback position about every 100 ms, and stopped scrubs sync past a
   50 ms threshold.
@@ -132,8 +174,10 @@ Every platform ships the same set:
 
 ## Known issues and limitations
 
-- **The plugin window is Windows / macOS only.** On Linux, double-clicking the plugin
-  opens nothing for now; functionality is unaffected.
+- **The Linux plugin window is the newest backend.** It needs a session with X11 available
+  (XWayland counts); a Linux build without X11/Xft at configure time, or a host that offers no
+  X11 parent, loads without a window and the track is still switchable from the host's own
+  parameter panel.
 - **OpenUtau's playhead is driven by the DAW.** Scrubbing OpenUtau's playhead during
   playback is instantly overwritten — expected behavior.
 - **The two sides align by seconds, not by bars.** A BPM mismatch produces a notice only;
@@ -154,7 +198,7 @@ Every platform ships the same set:
 
 ## Quality verification
 
-- The plugin's own test suite passes 125/125 (protocol, concurrency, mixing, full
+- The plugin's own test suite passes 127/127 (protocol, concurrency, mixing, full
   resample chain, over real sockets).
 - GitHub CI on three platforms (Windows x64 / macOS arm64 / Linux x64): build + tests +
   Steinberg VST3 validator, all green.
