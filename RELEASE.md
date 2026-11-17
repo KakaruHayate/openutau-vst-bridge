@@ -87,8 +87,10 @@ Downloading `plugins-*-latest.zip` from this release gets the corrected build ei
 
 ## 1.0.2 · 2026-10-05
 
-One community fix (#12): the VST3 module loads in Ableton Live again. No protocol or behaviour
-change.
+One community fix ([#12](https://github.com/KakaruHayate/openutau-vst-bridge/pull/12), by
+[@toneclusterr](https://github.com/toneclusterr)): the VST3 module loads in Ableton Live
+again — a dummy MIDI port, so the host's plug-in check is satisfied. No protocol or
+behaviour change.
 
 ---
 

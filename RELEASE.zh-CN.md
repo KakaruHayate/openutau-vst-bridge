@@ -69,7 +69,8 @@ v1.1 及以上的 OpenUtau 版本兼容：
 
 ## 1.0.2 · 2026-10-05
 
-一个社区修复（#12）：VST3 模块重新能在 Ableton Live 里加载。协议与行为无变化。
+一个社区修复（[#12](https://github.com/KakaruHayate/openutau-vst-bridge/pull/12)，作者
+[@toneclusterr](https://github.com/toneclusterr)）：VST3 模块重新能在 Ableton Live 里加载——补了一个 dummy MIDI 端口，让宿主的插件检查通过。协议与行为无变化。
 
 ---
 

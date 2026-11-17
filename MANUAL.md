@@ -208,6 +208,10 @@ Two failures have nothing to do with the plugin: the host or the platform is in 
 
 Attaching the log files above makes issues much easier to diagnose.
 
+Thanks: [@linux-leo](https://github.com/linux-leo) for the Linux plugin window and the
+multi-instance crash that went with it, and
+[@toneclusterr](https://github.com/toneclusterr) for the Ableton Live VST3 load fix.
+
 ## 6. Explicitly not supported
 
 - MIDI input (playing or drawing MIDI in the DAW does nothing);

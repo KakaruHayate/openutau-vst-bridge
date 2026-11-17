@@ -85,6 +85,22 @@ only useful if OpenUtau sees it too. Background: [#16](https://github.com/Kakaru
   [`PROTOCOL.md`](PROTOCOL.md) for the wire contract.
 - 中文：[使用说明书](MANUAL.zh-CN.md) · [发布说明](RELEASE.zh-CN.md)
 
+## Contributors
+
+- **KakaruHayate** — the project.
+- **linux-leo** — the Linux plugin window
+  ([#15](https://github.com/KakaruHayate/openutau-vst-bridge/pull/15)): the X11 backend, the
+  deferred and shared display that removed the `BadLength` crash when several instances load
+  in one process, and the event-loop fixes that came with it.
+- **toneclusterr** — the VST3 load fix for Ableton Live
+  ([#12](https://github.com/KakaruHayate/openutau-vst-bridge/pull/12), reported as
+  [#11](https://github.com/KakaruHayate/openutau-vst-bridge/issues/11)): a dummy MIDI port,
+  so the host's plug-in check is satisfied.
+
+This list is the authoritative one. GitHub's own contributor graph attributes a commit by the
+author email recorded in it, so a commit authored with an address that was never connected to
+a GitHub account is left unattributed there even though the work is in `main` and named above.
+
 ## Licensing
 
 This project is MPL-2.0. MPL-2.0 is file-level copyleft, so the permissively licensed

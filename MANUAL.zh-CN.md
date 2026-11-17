@@ -154,6 +154,9 @@ DAW 工程会记住每个实例的 `OpenUtau Track` 设置，但**不保存** Op
 
 反馈时附上上面的日志文件，问题最容易定位。
 
+致谢：[@linux-leo](https://github.com/linux-leo)（Linux 插件窗口与随之修掉的多实例崩溃）、
+[@toneclusterr](https://github.com/toneclusterr)（Ableton Live 的 VST3 加载修复）。
+
 ## 6. 明确不支持的
 
 - MIDI 输入（在 DAW 里弹琴/画 MIDI 无效）；
