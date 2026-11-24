@@ -109,6 +109,15 @@ project has no reliable audio path, so nothing it delivers can be guaranteed.
 - You can keep using the `OpenUtau Track` parameter in the DAW's generic parameter panel
   instead; both sides stay in sync at all times. The parameter supports automation and is
   saved with the DAW project.
+- **With an OpenUtau that speaks protocol 1.3 or later, an instance follows its track**,
+  not its position: insert, delete or reorder tracks in OpenUtau and every DAW track keeps
+  its voice (the parameter's number updates itself). If the track is deleted, the instance goes silent and its window
+  says so; undoing the deletion brings it back. Picking a track (in the window or through
+  the parameter) binds the instance to whichever track is at that number at that moment;
+  automation that moves the parameter to a new number picks by number the same way.
+- **Save the OpenUtau project once after connecting a project made with an older OpenUtau**:
+  its tracks get their ids when it is opened, and if it is closed without saving, the next
+  open gives them new ones and the instances go silent until you pick their tracks again.
 - **To use several OpenUtau tracks in the DAW**: put one instance per DAW track and give
   each a different track. Then connect them **one by one** in OpenUtau's DAW Integration
   list (one row per instance).

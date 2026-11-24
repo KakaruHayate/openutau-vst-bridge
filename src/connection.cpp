@@ -112,6 +112,20 @@ void Connection::ServeRequest(const std::string &uuid, const std::string &kindNa
         RequestAudio(missing);
         return;
     }
+    if (kindName == kind::kBindTrack) {
+        std::string trackId;
+        if (!ParseBindTrackRequest(payload, &trackId)) {
+            Respond(uuid, BuildFailEnvelope("bindTrack payload carried no trackId."));
+            return;
+        }
+        std::string error;
+        if (!handler_->OnBindTrack(trackId, &error)) {
+            Respond(uuid, BuildFailEnvelope(error));
+            return;
+        }
+        Respond(uuid, BuildOkEnvelope());
+        return;
+    }
     // An unknown kind is refused with a failed envelope, never by dropping the connection (§5.1).
     BRIDGE_WARN("Unsupported request kind '%s', refused.", kindName.c_str());
     Respond(uuid, BuildFailEnvelope("Unsupported request kind: " + kindName));

@@ -153,7 +153,9 @@ struct WindowState {
             singer.color = strong;
             engine.color = strong;
         } else {
-            singer.text = L"No tracks reported yet.";
+            singer.text = shown.unbound
+                              ? L"Its OpenUtau track is gone; silent until it returns."
+                              : L"No tracks reported yet.";
             singer.color = weak;
             engine.text = L"";
             engine.color = weak;

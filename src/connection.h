@@ -39,6 +39,14 @@ public:
 
     /// A payload that has already passed its hash and frame-size checks.
     virtual void OnAudio(const std::string &hash, std::vector<uint8_t> &&pcm) = 0;
+
+    /// v1.3 `bindTrack`: bind to the track with this id. False, with a reason in `error`, when
+    /// the instance cannot (no such track); the request is then refused.
+    virtual bool OnBindTrack(const std::string &trackId, std::string *error) {
+        *error = "bindTrack is not supported.";
+        (void)trackId;
+        return false;
+    }
 };
 
 enum class ConnectionEnd {

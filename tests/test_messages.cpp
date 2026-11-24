@@ -126,7 +126,7 @@ TEST_CASE("envelopes report success and carry their data") {
     REQUIRE(ParseEnvelope(initResponse, &envelope));
     CHECK(envelope.success);
     CHECK(envelope.error.empty());
-    CHECK(Contains(initResponse, "\"apiVersion\":\"1.2\""));
+    CHECK(Contains(initResponse, "\"apiVersion\":\"1.3\""));
 
     std::string layoutResponse = BuildPartLayoutResponseEnvelope({"7", "8"});
     REQUIRE(ParseEnvelope(layoutResponse, &envelope));
@@ -161,7 +161,7 @@ TEST_CASE("the discovery file advertises port, name and version") {
     std::string json = BuildDiscoveryJson(52341, "OpenUtau Bridge (Track 1)");
     CHECK(Contains(json, "\"port\":52341"));
     CHECK(Contains(json, "\"name\":\"OpenUtau Bridge (Track 1)\""));
-    CHECK(Contains(json, "\"apiVersion\":\"1.2\""));
+    CHECK(Contains(json, "\"apiVersion\":\"1.3\""));
 }
 
 TEST_CASE("project info parses its name and saved state") {

@@ -72,7 +72,7 @@ One JSON file per plugin instance:
 {
   "port": 52341,
   "name": "OpenUtau Bridge (Track 1)",
-  "apiVersion": "1.2"
+  "apiVersion": "1.3"
 }
 ```
 
@@ -126,7 +126,7 @@ audio <hash> <length>\n
 #### `init` (request)
 
 - `request:<uuid>:init`, payload `{ "ustx": "<full USTX project document>" }`
-- Response `data`: `{ "apiVersion": "1.2" }`
+- Response `data`: `{ "apiVersion": "1.3" }`
 - Sent once at connect; the full project is the baseline. OpenUtau is the sole owner of the project, so the baseline only ever travels outward and is never echoed back.
 
 #### `updateUstx` (notification)
@@ -140,10 +140,12 @@ audio <hash> <length>\n
 ```json
 {
   "parts": [
-    { "trackNo": 0, "startMs": 1200.0, "endMs": 8400.0, "audioHash": "13507256038857166760" }
+    { "trackNo": 0, "trackId": "t4kq2m7xa5b", "startMs": 1200.0, "endMs": 8400.0, "audioHash": "13507256038857166760" }
   ]
 }
 ```
+
+- **v1.3:** `trackId` is the owning track's `id` (see `updateTracks`), taken in the same snapshot as `trackNo`. A plugin bound by id filters parts on it, so a layout that lags behind a reorder (§7: tracks travel in the 1 s stream, the layout in the 5 s one) never plays another track's parts. An empty string for a part whose track is unknown. Always sent, see `updateTracks`.
 
 - `audioHash` = XXH64 of that part's rendered audio. Plugin dedupes against audio it already holds (in memory or in its cache). 64-bit is deliberate: collision risk is negligible, and the receiver additionally SHOULD verify the frame `length` as a cheap integrity cross-check.
 - Response `data`: `{ "missingAudios": ["13507256038857166760", ...] }` (decimal strings).
@@ -151,8 +153,10 @@ audio <hash> <length>\n
 #### `updateTracks` (notification)
 
 ```json
-{ "tracks": [ { "name": "Singer 1", "volume": 0.0, "pan": 0.0, "muted": false, "singer": "Kikyo", "engine": "DIFFSINGER" } ] }
+{ "tracks": [ { "id": "t4kq2m7xa5b", "name": "Singer 1", "volume": 0.0, "pan": 0.0, "muted": false, "singer": "Kikyo", "engine": "DIFFSINGER" } ] }
 ```
+
+- **v1.3:** `id` is the track's stable identity (`UTrack.Id`), saved in the project. It survives reordering, renaming and save/load; a copied, imported or templated track gets a new one, and undoing a track deletion brings the same one back. Treat it as an opaque string. `id` and `trackId` are **always sent, whatever minor was negotiated** — an exception to §4's minor-skew rule: OpenUtau broadcasts one payload to every connection, and gating these fields would strip them from 1.3 plugins whenever a 1.2 plugin is connected too. Older plugins ignore them (§10).
 
 - `volume`/`pan` are passed through in OpenUtau's internal scale, unconverted: `UTrack.Volume` is **decibels** (`0` = unity) and `UTrack.Pan` is **-100..+100** (`0` = centre).
 - `muted` is the **effective** mute: `UTrack.Muted`, which already has solo resolved against the rest of the project.
@@ -169,6 +173,16 @@ audio <hash> <length>\n
 
 - What a plugin's info window shows about the project. `name` is the project file's stem; an unsaved project reports `saved` false and an empty `name`.
 - Part of the fast debounced stream (§7): pushed once per full sync and whenever the project is saved or renamed. A plugin may ignore it — it carries no state the mixer or renderer needs.
+
+#### `bindTrack` (request) — v1.3
+
+```json
+{ "trackId": "t4kq2m7xa5b" }
+```
+
+- Binds the instance to the track with this `id`, exactly as if it had been picked in the plugin (§6.4). Sent only to plugins that answered `init` with a minor of 3 or more.
+- Response: an empty success. A plugin refuses an id its last `updateTracks` did not carry (failed envelope with a reason); the binding is then unchanged. That includes the moment between `init` and the first `updateTracks`. There is no unbind.
+- The plugin then reports the new binding with `bindingChanged`, like any other change; binding the id it already has changes nothing and sends nothing.
 
 ### 6.2 Plugin → OpenUtau
 
@@ -221,7 +235,26 @@ audio 13507256038857166760 3528000\n<3528000 raw bytes>
   it before it was sent. The receiver shows each of these as a dialog, so a sender that paces
   them any faster turns one edit into a stack of windows.
 
-### 6.3 MIDI input (reserved — not in v1)
+#### `bindingChanged` (notification) — v1.3
+
+```json
+{ "trackId": "t4kq2m7xa5b", "hostTrackName": "Lead Vox" }
+```
+
+- Which track the instance is bound to now. `trackId` is the bound id even while that track is missing from the project (the instance is then silent, §6.4), and `null` only when it is bound to none yet (a fresh instance before the first `updateTracks`, or a position past the end). `hostTrackName` is the DAW's own name for the track the instance sits on, when the host reports one (CLAP `track-info`), and `null` otherwise; it is informational, e.g. for a tool that matches DAW tracks to voices.
+- Sent **after every `init`** — OpenUtau forgets an instance's binding when the connection drops — and again **whenever either field changes**, whoever changed it: the plugin's window, the host's parameter or automation, a restored DAW session, a migration (§6.4) or `bindTrack`.
+- OpenUtau uses it to show each instance's track and to warn when two instances play the same one, which doubles its level in the DAW.
+
+### 6.4 Track binding (v1.3)
+
+Up to 1.2 an instance names its track by position (`trackNo`), so inserting, deleting or reordering tracks in OpenUtau moves DAW tracks onto other voices. From 1.3 an instance binds to a track's `id`:
+
+- **Resolution.** On every `updateTracks` the instance looks its id up and plays the parts whose `trackId` matches. When the id is missing (the track was deleted, or another project is open) the instance is **silent** and **keeps the id**, so undoing the deletion brings the voice back. It never falls back to a position or a name at run time — both are reused by unrelated tracks (new tracks are named `Track1`, `Track2`, … in every project).
+- **Picking by position.** A pick in the plugin's window or through its host parameter names a position; the instance binds to the id of the track at that position, then follows it. Only a value that differs from the one the host last sent (or was told by a report of the window's pick) is a pick. A reorder moves the parameter without the host sending anything, so a lane that still holds, or re-asserts, its number from before the reorder does not rebind; a lane that moves to a new number does, by position. When a reorder moves the bound track, the instance updates its parameter and tells the host to re-read it (CLAP `params.rescan`), rather than reporting a user's movement.
+- **Migration.** State saved before 1.3 holds only a position. The first `updateTracks` with ids gives it the id at that position, and the instance asks the host to save (CLAP `state.mark_dirty`). An OpenUtau project saved before ids existed gets them when it is opened, and OpenUtau counts them as unsaved changes once a plugin has seen them: unless the project is saved, the next open makes new ids and the instances go silent until picked again.
+- **Older peers.** Against an OpenUtau that sends no ids, the position is the binding, as in 1.2. The reference bridge's saved state keeps 1.1's layout and appends the id, so an older build of the plugin still loads it.
+
+### 6.5 MIDI input (reserved — not in v1)
 
 Reserved for a future message family (e.g. `notification:midiNotes`, `request:recordMidi`). The PR #2187 plugin received `MidiEvent*` in `run()` but never relayed it; v1 does not define this direction.
 
@@ -266,6 +299,7 @@ disconnect (user)   → final update → "close" → teardown
 - **Unknown fields** ignored by receivers.
 - `apiVersion` in discovery file + `init` response; major mismatch refuses connection.
 - **1.1 → 1.2:** `updateTracks` gained optional per-track `singer`/`engine` informational fields; nothing else changed, and 1.1 plugins interoperate unchanged.
+- **1.2 → 1.3:** track identity. `updateTracks[].id` and `updatePartLayout.parts[].trackId` (always sent), `bindTrack` (OpenUtau → plugin, only to 1.3 plugins) and `bindingChanged` (plugin → OpenUtau, sent whatever minor was negotiated; a 1.2 OpenUtau ignores the unknown kind); instances bind by id (§6.4). 1.2 plugins and a 1.2 OpenUtau interoperate unchanged: each side ignores what it does not know, and the position stays the binding against a peer without ids.
 
 ## 11. Security & Trust Model
 
@@ -291,7 +325,7 @@ disconnect (user)   → final update → "close" → teardown
 1. **`apiVersion`** — field in discovery file + echoed in `init` (recommended) or implicit?
 2. **Audio pull model** — `getAudio` request/response (recommended, gives the plugin backpressure) vs. OpenUtau pushing `audio` frames unprompted.
 3. **Audio cache lifetime** — plugin caches decoded audio by hash; v1 keeps cache ownership entirely on the plugin side. OK?
-4. **MIDI direction** — explicitly out of v1 (§6.3). Confirm scope.
+4. **MIDI direction** — explicitly out of v1 (§6.5). Confirm scope.
 5. **Discovery file naming** — recommend `<plugin-name>-<instance>.json` to avoid collisions.
 6. **Multi-client** — one active socket per plugin instance in v1.
 7. **Tempo sync** — likely v1.1 (`notification:tempoMap`); leave wire space.

@@ -21,16 +21,23 @@ inline constexpr const char *kUpdatePartLayout = "updatePartLayout";
 inline constexpr const char *kGetAudio = "getAudio";
 inline constexpr const char *kUpdateTracks = "updateTracks";
 inline constexpr const char *kUpdateProjectInfo = "updateProjectInfo";
+/// v1.3 request: bind this instance to a track by id.
+inline constexpr const char *kBindTrack = "bindTrack";
 inline constexpr const char *kPing = "ping";
 inline constexpr const char *kPlaybackStarted = "playbackStarted";
 inline constexpr const char *kPlayhead = "playhead";
 inline constexpr const char *kBpm = "bpm";
+/// v1.3 notification: the track id this instance is bound to now.
+inline constexpr const char *kBindingChanged = "bindingChanged";
 }  // namespace kind
 
 /// One entry of `updatePartLayout`. Windows are absolute milliseconds on OpenUtau's
 /// timeline, not the DAW's — a differing tempo misaligns musically until tempo sync lands.
 struct PartLayout {
     int trackNo = 0;
+    /// v1.3: the owning track's id, from the same snapshot as `trackNo`. Empty from an older
+    /// OpenUtau, which then only identifies tracks by position.
+    std::string trackId;
     double startMs = 0.0;
     double endMs = 0.0;
     std::string audioHash;
@@ -39,6 +46,8 @@ struct PartLayout {
 /// One entry of `updateTracks`, retained for wire compatibility. The bridge's default output is
 /// pre-fader, so these mixer values are informational here; the DAW owns gain, pan, mute and solo.
 struct TrackInfo {
+    /// v1.3: the track's stable id, which survives reordering. Empty from an older OpenUtau.
+    std::string id;
     std::string name;
     /// Decibels; 0 is unity. Convert with the fader law in fader.h, not 10^(dB/20).
     double volume = 0.0;
@@ -72,11 +81,15 @@ bool ParsePartLayoutRequest(const std::string &json, std::vector<PartLayout> *pa
 bool ParseTracksNotification(const std::string &json, std::vector<TrackInfo> *tracks);
 bool ParseProjectInfoNotification(const std::string &json, ProjectInfo *info);
 bool ParseEnvelope(const std::string &json, Envelope *envelope);
+/// v1.3 `{ "trackId": "<id>" }`. False when the id is missing or empty.
+bool ParseBindTrackRequest(const std::string &json, std::string *trackId);
 
 /// Complete `{ "success": …, "data": …, "error": … }` envelopes, ready to send.
 std::string BuildInitResponseEnvelope();
 std::string BuildPartLayoutResponseEnvelope(const std::vector<std::string> &missingAudios);
 std::string BuildFailEnvelope(const std::string &error);
+/// A success with no data, for requests that only need an acknowledgement.
+std::string BuildOkEnvelope();
 
 std::string BuildGetAudioPayload(const std::string &hash);
 
@@ -86,6 +99,11 @@ std::string BuildPlayheadPayload(double positionMs, bool playing);
 
 /// The DAW project's tempo (v1.1).
 std::string BuildBpmPayload(double bpm);
+
+/// v1.3: the track this instance is bound to, and the DAW's name for the track the instance sits
+/// on. An empty string goes out as null: no binding, or no name from the host.
+std::string BuildBindingChangedPayload(const std::string &trackId,
+                                       const std::string &hostTrackName);
 
 /// `{}` — the payload of the kinds that carry no fields.
 std::string BuildEmptyPayload();

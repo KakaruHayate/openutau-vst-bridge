@@ -69,6 +69,7 @@ bool ParsePartLayoutRequest(const std::string &json, std::vector<PartLayout> *pa
         }
         PartLayout part;
         part.trackNo = ReadInt(entry, "trackNo", 0);
+        part.trackId = ReadString(entry, "trackId");
         part.startMs = ReadNumber(entry, "startMs", 0.0);
         part.endMs = ReadNumber(entry, "endMs", 0.0);
         part.audioHash = ReadString(entry, "audioHash");
@@ -98,6 +99,7 @@ bool ParseTracksNotification(const std::string &json, std::vector<TrackInfo> *tr
             return false;
         }
         TrackInfo track;
+        track.id = ReadString(entry, "id");
         track.name = ReadString(entry, "name");
         track.volume = ReadNumber(entry, "volume", 0.0);
         track.pan = ReadNumber(entry, "pan", 0.0);
@@ -138,6 +140,15 @@ bool ParseEnvelope(const std::string &json, Envelope *envelope) {
     return true;
 }
 
+bool ParseBindTrackRequest(const std::string &json, std::string *trackId) {
+    Json object = ParseObject(json);
+    if (object.is_null()) {
+        return false;
+    }
+    *trackId = ReadString(object, "trackId");
+    return !trackId->empty();
+}
+
 std::string BuildInitResponseEnvelope() {
     Json envelope = {
         {"success", true},
@@ -165,6 +176,15 @@ std::string BuildFailEnvelope(const std::string &error) {
     return envelope.dump();
 }
 
+std::string BuildOkEnvelope() {
+    Json envelope = {
+        {"success", true},
+        {"data", nullptr},
+        {"error", nullptr},
+    };
+    return envelope.dump();
+}
+
 std::string BuildGetAudioPayload(const std::string &hash) {
     return Json{{"hash", hash}}.dump();
 }
@@ -179,6 +199,15 @@ std::string BuildPlayheadPayload(double positionMs, bool playing) {
 
 std::string BuildBpmPayload(double bpm) {
     return Json{{"bpm", bpm}}.dump();
+}
+
+std::string BuildBindingChangedPayload(const std::string &trackId,
+                                       const std::string &hostTrackName) {
+    Json payload = {
+        {"trackId", trackId.empty() ? Json(nullptr) : Json(trackId)},
+        {"hostTrackName", hostTrackName.empty() ? Json(nullptr) : Json(hostTrackName)},
+    };
+    return payload.dump();
 }
 
 std::string BuildEmptyPayload() {

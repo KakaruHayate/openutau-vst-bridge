@@ -59,6 +59,7 @@ void Session::Run() {
     while (!stop_.load()) {
         PumpInputs();
         ServeConnection();
+        PumpBinding();
         PumpPlayhead();
         PumpTempo();
         if (dirty_) {
@@ -90,10 +91,28 @@ void Session::PumpInputs() {
                         layout_.size());
         }
     }
-    int track = trackNo_.load();
-    if (track != builtTrack_) {
-        builtTrack_ = track;
-        dirty_ = true;
+    bool rebind = false;
+    // A restore is what the host already holds, so only a change from it counts as one.
+    std::string previousId = binding_.trackId;
+    {
+        std::lock_guard<std::mutex> lock(bindingMutex_);
+        if (restorePending_) {
+            restorePending_ = false;
+            binding_ = restored_;
+            previousId = restored_.trackId;
+            rebind = true;
+        }
+        hostTrackName_ = hostTrackNameIn_;
+    }
+    int pick = pick_.exchange(-1);
+    if (pick >= 0) {
+        // A pick names a position; the id is whatever track is there, adopted by Resolve.
+        binding_.trackId.clear();
+        binding_.trackNo = pick;
+        rebind = true;
+    }
+    if (rebind) {
+        Rebind(previousId);
     }
     // A start nobody is connected to hear is not owed a notification, so the flag is consumed
     // either way rather than held for a connection that may never arrive.
@@ -126,6 +145,7 @@ void Session::ServeConnection() {
     connection_ = std::make_unique<Connection>(stream_.get(),
                                                static_cast<ConnectionHandler *>(this));
     connected_.store(true);
+    bindingSent_ = false;  // Every OpenUtau that connects hears the binding after its init.
     // A fresh connection knows nothing of what was reported before it. Inverting the last-sent
     // play state makes the current one a change, so position and tempo are reported immediately
     // rather than after their first interval.
@@ -142,8 +162,119 @@ void Session::ServeConnection() {
 void Session::Republish() {
     // The store's rate rather than the host's: it is the rate the clips have actually been
     // converted to, so a snapshot can never claim one its audio is not at.
-    timeline_.Publish(
-        BuildTimeline(layout_, tracks_, store_, builtTrack_, store_.HostSampleRate()));
+    timeline_.Publish(BuildTimeline(layout_, tracks_, store_, route_, store_.HostSampleRate(),
+                                    binding_.trackId));
+}
+
+void Session::Rebind(std::string previousId) {
+    const int previousTrackNo = trackNo_.load();
+    const bool wasUnbound = unbound_.load();
+    Resolution resolved = Resolve(&binding_, tracks_);
+    route_ = resolved.trackNo;
+    // A pick the worker has not taken yet already set the value the host and window show; it
+    // is not overwritten with the position it replaces. The next round binds it. The store only
+    // happens if the value is still the one read above, so a pick that lands in between wins.
+    if (pick_.load() < 0) {
+        int expected = previousTrackNo;
+        trackNo_.compare_exchange_strong(expected, binding_.trackNo);
+    }
+    // Unbound means bound to an id the project lacks; a position past the end with no id is
+    // just an instance with nothing to play yet, and so is one that has seen no track list.
+    unbound_.store(resolved.trackNo < 0 && !binding_.trackId.empty() && tracksReceived_ &&
+                   (tracks_.empty() || TracksCarryIds(tracks_)));
+    {
+        std::lock_guard<std::mutex> lock(bindingMutex_);
+        savedBinding_ = binding_;
+    }
+    bool notify = false;
+    if (binding_.trackId != previousId) {
+        stateDirty_.store(true);
+        notify = true;
+    }
+    // The parameter's text follows the binding too: an unbound instance shows no track name.
+    if (binding_.trackNo != previousTrackNo || unbound_.load() != wasUnbound) {
+        paramsChanged_.store(true);
+        valueMoved_.store(true);
+        notify = true;
+    }
+    if (notify && notifyHost_) {
+        notifyHost_();
+    }
+    if (resolved.adopted) {
+        BRIDGE_INFO("Bound to track %s, at position %d.", binding_.trackId.c_str(),
+                    binding_.trackNo + 1);
+    } else if (resolved.trackNo < 0 && !binding_.trackId.empty()) {
+        BRIDGE_INFO("Track %s is not in the project; silent until it is.",
+                    binding_.trackId.c_str());
+    }
+    dirty_ = true;
+}
+
+void Session::PumpBinding() {
+    if (connection_ == nullptr || !connection_->IsInitialized()) {
+        return;
+    }
+    if (bindingSent_ && binding_.trackId == sentTrackId_ &&
+        hostTrackName_ == sentHostTrackName_) {
+        return;
+    }
+    if (connection_->SendNotification(kind::kBindingChanged,
+                                      BuildBindingChangedPayload(binding_.trackId,
+                                                                 hostTrackName_))) {
+        bindingSent_ = true;
+        sentTrackId_ = binding_.trackId;
+        sentHostTrackName_ = hostTrackName_;
+    }
+}
+
+bool Session::OnBindTrack(const std::string &trackId, std::string *error) {
+    bool known = std::any_of(tracks_.begin(), tracks_.end(),
+                             [&](const TrackInfo &track) { return track.id == trackId; });
+    if (!known) {
+        *error = "No track has the id " + trackId + ".";
+        return false;
+    }
+    const std::string previousId = binding_.trackId;
+    binding_.trackId = trackId;
+    Rebind(previousId);
+    return true;
+}
+
+void Session::RestoreBinding(const Binding &binding) {
+    Binding clamped = binding;
+    clamped.trackNo = std::clamp(binding.trackNo, 0, kMaxTrackNo);
+    pick_.store(-1);
+    trackNo_.store(clamped.trackNo);
+    std::lock_guard<std::mutex> lock(bindingMutex_);
+    restored_ = clamped;
+    restorePending_ = true;
+}
+
+Binding Session::SavedBinding() const {
+    std::lock_guard<std::mutex> lock(bindingMutex_);
+    Binding binding = restorePending_ ? restored_ : savedBinding_;
+    int pick = pick_.load();
+    if (pick >= 0) {
+        binding.trackId.clear();
+        binding.trackNo = pick;
+    }
+    return binding;
+}
+
+void Session::SetHostTrackName(const std::string &name) {
+    std::lock_guard<std::mutex> lock(bindingMutex_);
+    hostTrackNameIn_ = name;
+}
+
+std::string Session::TrackNameAt(int trackNo) const {
+    if (unbound_.load() && trackNo == trackNo_.load()) {
+        return std::string();  // That position now holds another track, not this instance's.
+    }
+    std::lock_guard<std::mutex> lock(uiMutex_);
+    if (trackNo < 0 || static_cast<size_t>(trackNo) >= uiTracks_.size()) {
+        return std::string();
+    }
+    return uiTracks_[static_cast<size_t>(trackNo)].name;
 }
 
 void Session::OnUstx(const std::string &ustx) {
@@ -169,13 +300,29 @@ std::vector<std::string> Session::OnPartLayout(const std::vector<PartLayout> &pa
 }
 
 void Session::OnTracks(const std::vector<TrackInfo> &tracks) {
+    // The parameter's text carries the track names, so a rename is a text change for the host.
+    bool namesChanged = tracks.size() != tracks_.size() ||
+                        !std::equal(tracks.begin(), tracks.end(), tracks_.begin(),
+                                    [](const TrackInfo &a, const TrackInfo &b) {
+                                        return a.name == b.name;
+                                    });
     // Worker-owned copy for the timeline; a second copy under the UI mutex for the window.
     tracks_ = tracks;
+    tracksReceived_ = true;
     {
         std::lock_guard<std::mutex> lock(uiMutex_);
         uiTracks_ = tracks;
     }
-    dirty_ = true;
+    // A reorder moves the bound track, a deletion unbinds it, and the first list with ids is
+    // what a binding saved before v1.3 adopts its id from. The host hears about new names only
+    // after that, so a rescan never reads a text from before the binding was resolved.
+    Rebind(binding_.trackId);
+    if (namesChanged) {
+        paramsChanged_.store(true);
+        if (notifyHost_) {
+            notifyHost_();
+        }
+    }
 }
 
 void Session::OnProjectInfo(const ProjectInfo &info) {
@@ -343,7 +490,10 @@ UiState Session::UiCopy() const {
     UiState state;
     state.connected = connected_.load();
     state.port = listener_.Port();
-    state.trackNo = trackNo_.load();
+    state.unbound = unbound_.load();
+    // No position while unbound: the one last known now holds another track, and the window
+    // must neither select nor describe it.
+    state.trackNo = state.unbound ? -1 : trackNo_.load();
     state.hasTempo = hasTempo_.load();
     state.tempo = tempo_.load();
     state.playing = playing_.load();

@@ -56,12 +56,17 @@ struct Timeline {
 
 using TimelinePtr = std::shared_ptr<const Timeline>;
 
-/// Builds the snapshot for `trackNo`. Parts on other tracks and parts whose audio has not arrived
-/// are left out. Track volume, pan and effective mute are intentionally not applied: the DAW owns
-/// those controls for the pre-fader signal.
+/// Builds the snapshot for one track. With a `trackId` and a track list that carries ids (v1.3)
+/// the parts are picked by their own `trackId`, so a layout that lags behind a reorder never
+/// plays another track's parts; an instance bound to an id gets silence, not a neighbour, when no
+/// part carries it. Otherwise they are picked by position, `trackNo`, as an older OpenUtau
+/// requires. Either way `trackNo` must be a position the track list has: an instance whose bound
+/// track is gone (-1) is silent even while the layout still names that track's parts. Parts whose audio has
+/// not arrived are left out. Track volume, pan and effective mute are intentionally not applied:
+/// the DAW owns those controls for the pre-fader signal.
 TimelinePtr BuildTimeline(const std::vector<PartLayout> &parts,
                           const std::vector<TrackInfo> &tracks, const AudioStore &store,
-                          int trackNo, double sampleRate);
+                          int trackNo, double sampleRate, const std::string &trackId = {});
 
 /// Adds every part overlapping [fromFrame, fromFrame + frames) into the buffers. Adds rather
 /// than assigns — the caller clears, and overlapping parts on one track sum, as they do in
