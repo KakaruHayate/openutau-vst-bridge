@@ -62,6 +62,7 @@ struct Bridge {
     clap_plugin_t plugin{};
     const clap_host_t *host = nullptr;
     const clap_host_params_t *hostParams = nullptr;  // For the picker's flush nudge.
+    const clap_host_gui_t *hostGui = nullptr;        // For closed() when the user shuts the window.
     double sampleRate = 0.0;
     /// The in-flight picker report: how many of gesture/value/gesture the host queue took,
     /// and the value it is reporting. See NotifyTrackRequest.
@@ -395,15 +396,30 @@ bool PluginInit(const clap_plugin_t *plugin) {
     if (self->host != nullptr) {
         self->hostParams = static_cast<const clap_host_params_t *>(
             self->host->get_extension(self->host, CLAP_EXT_PARAMS));
+        self->hostGui = static_cast<const clap_host_gui_t *>(
+            self->host->get_extension(self->host, CLAP_EXT_GUI));
     }
     self->session.Start();
     // The picker's flush nudge: a stopped host learns of the new value when it next runs
     // flush, which the request asks it to do soon.
-    self->window = bridge::CreateInfoWindow(&self->session, [self] {
-        if (self->hostParams != nullptr) {
-            self->hostParams->request_flush(self->host);
-        }
-    });
+    self->window = bridge::CreateInfoWindow(
+        &self->session,
+        [self] {
+            if (self->hostParams != nullptr) {
+                self->hostParams->request_flush(self->host);
+            }
+        },
+        // A floating window closed with its own close box must be reported, or the host keeps
+        // its "show editor" toggle on for a hidden window and the next click only turns it off.
+        // was_destroyed is true so the host calls destroy() and treats the editor as closed:
+        // Bitwig ignores closed(false) and keeps the toggle on. destroy() only hides here, and
+        // the next create() reuses the window. closed() is thread-safe, so the X11 event
+        // thread may call it too.
+        [self] {
+            if (self->hostGui != nullptr && self->hostGui->closed != nullptr) {
+                self->hostGui->closed(self->host, true);
+            }
+        });
     bridge::GuiRegister(plugin, self->window);  // Null on platforms with no gui backend.
     return true;
 }
