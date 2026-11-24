@@ -152,6 +152,11 @@ public:
     /// parameter's value instead of being told the user moved it.
     bool ConsumeParamsChanged() { return paramsChanged_.exchange(false); }
 
+    /// Main thread. True once after the bound track's position changed or the instance became
+    /// bound or unbound - a subset of ConsumeParamsChanged, which also covers renamed tracks.
+    /// A picker report staged before such a move carries a value that is no longer right.
+    bool ConsumeValueMoved() { return valueMoved_.exchange(false); }
+
     /// Main thread. True once after the bound id changed (a migration, a pick, `bindTrack`), so
     /// the host knows its session has something new to save.
     bool ConsumeStateDirty() { return stateDirty_.exchange(false); }
@@ -304,6 +309,9 @@ private:
     std::string hostTrackName_;
     /// What this connection last heard in `bindingChanged`; nothing until the first one.
     bool bindingSent_ = false;
+    /// Whether OpenUtau has sent a track list yet: before that, an id-bound instance has not
+    /// lost its track, it just has not heard of any.
+    bool tracksReceived_ = false;
     std::string sentTrackId_;
     std::string sentHostTrackName_;
     bool dirty_ = false;
@@ -316,6 +324,7 @@ private:
     std::atomic<int> pick_{-1};
     std::atomic<bool> unbound_{false};
     std::atomic<bool> paramsChanged_{false};
+    std::atomic<bool> valueMoved_{false};
     std::atomic<bool> stateDirty_{false};
     std::function<void()> notifyHost_;
     /// Main thread to worker: a restored binding and the host's track name. Worker to main

@@ -98,6 +98,15 @@ TEST_CASE("A deleted track unbinds without falling back to a neighbour, and come
     CHECK(back.trackNo == 1);
 }
 
+TEST_CASE("An id-bound instance has no track in an empty list") {
+    Binding binding;
+    binding.trackId = "tb";
+    binding.trackNo = 0;
+
+    CHECK(bridge::Resolve(&binding, {}).trackNo == -1);
+    CHECK(binding.trackId == "tb");
+}
+
 TEST_CASE("A position past the end does not adopt anything") {
     Binding binding;
     binding.trackNo = 5;
@@ -175,6 +184,32 @@ TEST_CASE("A layout with ids is filtered by id, so a lagging layout plays no nei
 
     REQUIRE(timeline->parts.size() == 1);
     CHECK(timeline->parts[0].clip->left[0] == 0.5f);
+}
+
+TEST_CASE("A deleted track is silent even while the layout still names its parts") {
+    AudioStore store;
+    store.SetHostSampleRate(44100.0);
+    REQUIRE(store.Insert("gone", Wire(0.5f)));
+    // "tb" was deleted: the track list says so, the layout has not caught up yet.
+    std::vector<TrackInfo> tracks = {Track("ta", "A")};
+    std::vector<PartLayout> layout = {Part(1, "tb", "gone")};
+
+    auto timeline = bridge::BuildTimeline(layout, tracks, store, -1, 44100.0, "tb");
+
+    CHECK(timeline->parts.empty());
+}
+
+TEST_CASE("A track list with ids routes by id even against a layout kept from an older peer") {
+    AudioStore store;
+    store.SetHostSampleRate(44100.0);
+    REQUIRE(store.Insert("theirs", Wire(-0.25f)));
+    // After a reconnect: the new track list carries ids, the layout is still the old one.
+    std::vector<TrackInfo> tracks = {Track("ta", "A"), Track("tb", "B")};
+    std::vector<PartLayout> layout = {Part(1, "", "theirs")};
+
+    auto timeline = bridge::BuildTimeline(layout, tracks, store, 1, 44100.0, "ta");
+
+    CHECK(timeline->parts.empty());
 }
 
 TEST_CASE("A binding with an id still plays by position against a layout without ids") {

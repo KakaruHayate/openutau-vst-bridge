@@ -40,6 +40,11 @@ bool TracksCarryIds(const std::vector<TrackInfo> &tracks) {
 
 Resolution Resolve(Binding *binding, const std::vector<TrackInfo> &tracks) {
     Resolution result;
+    if (tracks.empty() && !binding->trackId.empty()) {
+        // No track can carry the bound id, whichever OpenUtau sent the list.
+        result.trackNo = -1;
+        return result;
+    }
     if (!TracksCarryIds(tracks)) {
         result.trackNo = binding->trackNo;
         return result;

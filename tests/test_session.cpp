@@ -778,11 +778,23 @@ TEST_CASE("A restored binding is what the host holds; only a migration asks it t
         saved.trackId = "tb";
         saved.trackNo = 1;
         session.RestoreBinding(saved);
+        // No track list yet: the instance has not lost its track, it has not heard of any.
+        std::this_thread::sleep_for(std::chrono::milliseconds(3 * Session::kPollMs));
+        CHECK_FALSE(session.UiCopy().unbound);
         REQUIRE(utau.Send(bridge::BuildNotificationLine(kind::kUpdateTracks, tracks)));
         REQUIRE(WaitUntil([&] { return session.UiCopy().tracks.size() == 2; }));
         std::this_thread::sleep_for(std::chrono::milliseconds(3 * Session::kPollMs));
         CHECK(session.SavedBinding().trackId == "tb");
         CHECK_FALSE(session.ConsumeStateDirty());
+    }
+    SUBCASE("An empty track list leaves an id-bound instance without its track") {
+        bridge::Binding saved;
+        saved.trackId = "tb";
+        saved.trackNo = 1;
+        session.RestoreBinding(saved);
+        REQUIRE(utau.Send(bridge::BuildNotificationLine(kind::kUpdateTracks, R"({"tracks":[]})")));
+        CHECK(WaitUntil([&] { return session.UiCopy().unbound; }));
+        CHECK(session.SavedBinding().trackId == "tb");
     }
     SUBCASE("A pick the worker has not taken yet is what gets saved") {
         session.SetTrackNo(1);

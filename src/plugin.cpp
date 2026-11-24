@@ -226,9 +226,10 @@ void ApplyEvents(Bridge *self, const clap_input_events_t *in) {
             // restored session, automation that does not move - must not rebind an instance
             // that follows its track by id.
             int picked = ClampTrack(event->value);
-            if (picked != self->lastHostValue_.exchange(picked)) {
-                self->session.SetTrackNo(picked);
+            if (picked == self->lastHostValue_.exchange(picked)) {
+                continue;  // A replay: neither a pick nor a reason to drop the window's.
             }
+            self->session.SetTrackNo(picked);
             // The host's own pick supersedes the window's: a request still pending would
             // re-report the host's own value as if the picker had chosen it, and a report
             // still in flight would overwrite the host's newer choice with a staged one.
@@ -612,11 +613,14 @@ const void *PluginGetExtension(const clap_plugin_t *plugin, const char *id) {
 /// binding changed (the host's session has something new to save).
 void PluginOnMainThread(const clap_plugin_t *plugin) {
     Bridge *self = Bridge::Of(plugin);
-    if (self->session.ConsumeParamsChanged()) {
+    if (self->session.ConsumeValueMoved()) {
         // A report still in flight carries the value from before the move and must not
-        // overwrite it. lastHostValue_ stays as it is: a rescan is not the host sending a value,
-        // and an automation lane may re-assert the number it held before the move.
+        // overwrite it. A rename changes only the text, so it leaves the report alone.
         self->dropStaleReport_.store(true);
+    }
+    if (self->session.ConsumeParamsChanged()) {
+        // lastHostValue_ stays as it is: a rescan is not the host sending a value, and an
+        // automation lane may re-assert the number it held before the move.
         if (self->hostParams != nullptr) {
             self->hostParams->rescan(self->host,
                                      CLAP_PARAM_RESCAN_VALUES | CLAP_PARAM_RESCAN_TEXT);

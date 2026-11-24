@@ -172,14 +172,16 @@ void Session::Rebind(std::string previousId) {
     Resolution resolved = Resolve(&binding_, tracks_);
     route_ = resolved.trackNo;
     // A pick the worker has not taken yet already set the value the host and window show; it
-    // is not overwritten with the position it replaces. The next round binds it.
+    // is not overwritten with the position it replaces. The next round binds it. The store only
+    // happens if the value is still the one read above, so a pick that lands in between wins.
     if (pick_.load() < 0) {
-        trackNo_.store(binding_.trackNo);
+        int expected = previousTrackNo;
+        trackNo_.compare_exchange_strong(expected, binding_.trackNo);
     }
     // Unbound means bound to an id the project lacks; a position past the end with no id is
-    // just an instance with nothing to play yet.
-    unbound_.store(resolved.trackNo < 0 && !binding_.trackId.empty() &&
-                   TracksCarryIds(tracks_));
+    // just an instance with nothing to play yet, and so is one that has seen no track list.
+    unbound_.store(resolved.trackNo < 0 && !binding_.trackId.empty() && tracksReceived_ &&
+                   (tracks_.empty() || TracksCarryIds(tracks_)));
     {
         std::lock_guard<std::mutex> lock(bindingMutex_);
         savedBinding_ = binding_;
@@ -192,6 +194,7 @@ void Session::Rebind(std::string previousId) {
     // The parameter's text follows the binding too: an unbound instance shows no track name.
     if (binding_.trackNo != previousTrackNo || unbound_.load() != wasUnbound) {
         paramsChanged_.store(true);
+        valueMoved_.store(true);
         notify = true;
     }
     if (notify && notifyHost_) {
@@ -305,6 +308,7 @@ void Session::OnTracks(const std::vector<TrackInfo> &tracks) {
                                     });
     // Worker-owned copy for the timeline; a second copy under the UI mutex for the window.
     tracks_ = tracks;
+    tracksReceived_ = true;
     {
         std::lock_guard<std::mutex> lock(uiMutex_);
         uiTracks_ = tracks;
