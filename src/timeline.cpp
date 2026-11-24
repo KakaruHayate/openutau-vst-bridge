@@ -15,16 +15,24 @@ size_t Timeline::Frames() const {
 
 TimelinePtr BuildTimeline(const std::vector<PartLayout> &parts,
                           const std::vector<TrackInfo> &tracks, const AudioStore &store,
-                          int trackNo, double sampleRate) {
+                          int trackNo, double sampleRate, const std::string &trackId) {
     auto timeline = std::make_shared<Timeline>();
     timeline->sampleRate = sampleRate;
-    if (sampleRate <= 0.0 || trackNo < 0 || static_cast<size_t>(trackNo) >= tracks.size()) {
+    if (sampleRate <= 0.0) {
+        return timeline;
+    }
+    // By id only when the layout carries ids: a binding saved under 1.3 still plays by position
+    // against an older OpenUtau, whose parts name only their track number.
+    const bool byId = !trackId.empty() &&
+                      std::any_of(parts.begin(), parts.end(),
+                                  [](const PartLayout &part) { return !part.trackId.empty(); });
+    if (!byId && (trackNo < 0 || static_cast<size_t>(trackNo) >= tracks.size())) {
         // Silence, not unity gain: an instance whose track the project does not have — because
         // it was deleted, or because `updateTracks` has not arrived yet — has no track to route.
         return timeline;
     }
     for (const PartLayout &part : parts) {
-        if (part.trackNo != trackNo) {
+        if (byId ? part.trackId != trackId : part.trackNo != trackNo) {
             continue;
         }
         AudioClipPtr clip = store.Find(part.audioHash);

@@ -10,6 +10,7 @@ add_executable(bridge-tests
         test_discovery.cpp
         test_audio_store.cpp
         test_timeline.cpp
+        test_binding.cpp
         test_transport.cpp
         test_connection.cpp
         test_socket.cpp

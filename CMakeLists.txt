@@ -59,6 +59,7 @@ add_library(${PROJECT_NAME}-impl STATIC
         src/connection.cpp
         src/audio_store.cpp
         src/timeline.cpp
+        src/binding.cpp
         src/session.cpp
         src/plugin.cpp
 

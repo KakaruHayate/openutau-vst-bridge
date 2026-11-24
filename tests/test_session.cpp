@@ -58,11 +58,15 @@ public:
     }
 
     /// The next line that is not a heartbeat. Kind Unknown on timeout, which no test expects.
-    ControlLine ReadControl(int timeoutMs = kWaitMs) {
+    /// `bindingChanged` (v1.3) is skipped too unless asked for: it follows every init on the
+    /// worker's own schedule, so its place among the other lines is not fixed.
+    ControlLine ReadControl(int timeoutMs = kWaitMs, bool keepBinding = false) {
         std::string line;
         while (reader_->ReadLine(&line, timeoutMs) == ReadStatus::Ok) {
             ControlLine control = bridge::ParseControlLine(line);
-            if (control.kind == ControlKind::Notification && control.name == kind::kPing) {
+            if (control.kind == ControlKind::Notification &&
+                (control.name == kind::kPing ||
+                 (!keepBinding && control.name == kind::kBindingChanged))) {
                 continue;
             }
             return control;
@@ -617,4 +621,180 @@ TEST_CASE("A host pick supersedes a pending GUI request; a refused report stays 
     session.RequestTrackNo(999);
     CHECK(session.TrackNo() == bridge::kMaxTrackNo);
     CHECK(session.HasTrackRequest());  // The clamped pick still asks to be reported.
+}
+
+namespace {
+
+std::string IdLayoutOf(int trackNo, const std::string &trackId, const std::string &hash) {
+    return R"({"trackNo":)" + std::to_string(trackNo) + R"(,"trackId":")" + trackId +
+           R"(","startMs":0,"endMs":1000,"audioHash":")" + hash + R"("})";
+}
+
+/// The next notification of this kind, skipping any other notification in between.
+ControlLine NextNotification(FakeOpenUtau &utau, const char *name) {
+    for (int i = 0; i < 20; i++) {
+        ControlLine line = utau.ReadControl(kWaitMs, true);
+        if (line.kind == ControlKind::Unknown) {
+            break;
+        }
+        if (line.kind == ControlKind::Notification && line.name == name) {
+            return line;
+        }
+    }
+    return ControlLine{};
+}
+
+}  // namespace
+
+TEST_CASE("An instance bound by id keeps its voice when OpenUtau reorders tracks") {
+    TempDir dir;
+    std::vector<uint8_t> a = WirePcm({0.5f, 0.5f}, {0.5f, 0.5f});
+    std::vector<uint8_t> b = WirePcm({-0.25f, -0.25f}, {-0.25f, -0.25f});
+    std::string aHash = HashOf(a);
+    std::string bHash = HashOf(b);
+
+    Session session(dir.path);
+    session.SetHostSampleRate(44100.0);
+    REQUIRE(session.Start());
+    FakeOpenUtau utau;
+    REQUIRE(utau.Connect(session.Port()));
+
+    REQUIRE(utau.Send(bridge::BuildNotificationLine(
+        kind::kUpdateTracks, R"({"tracks":[{"id":"ta","name":"A"},{"id":"tb","name":"B"}]})")));
+    REQUIRE(utau.Send(bridge::BuildRequestLine(
+        "c-1", kind::kUpdatePartLayout,
+        R"({"parts":[)" + IdLayoutOf(0, "ta", aHash) + "," + IdLayoutOf(1, "tb", bHash) +
+            R"(]})")));
+    REQUIRE(utau.ReadControl().kind == ControlKind::Response);
+    for (int i = 0; i < 2; i++) {
+        ControlLine pull = utau.ReadControl();
+        REQUIRE(pull.name == kind::kGetAudio);
+        bool isA = pull.payload.find(aHash) != std::string::npos;
+        REQUIRE(utau.SendFrame(isA ? aHash : bHash, isA ? a : b));
+    }
+
+    // The host picks position 2, which is track "tb".
+    session.SetTrackNo(1);
+    Block before(2);
+    REQUIRE(RenderUntil(session, 0, &before,
+                        [](const Block &out) { return out.left[0] == -0.25f; }));
+    session.ConsumeParamsChanged();
+
+    // OpenUtau moves "tb" to the top. The tracks arrive first and the layout a while later, as
+    // OpenUtau's debounce sends them; the instance must play "tb" throughout.
+    REQUIRE(utau.Send(bridge::BuildNotificationLine(
+        kind::kUpdateTracks, R"({"tracks":[{"id":"tb","name":"B"},{"id":"ta","name":"A"}]})")));
+    REQUIRE(WaitUntil([&] { return session.TrackNo() == 0; }));
+    Block during(2);
+    during.Render(session, 0);
+    CHECK(during.left[0] == -0.25f);
+    // Reported as a rescan, not as a movement the user made. Rebind stores the position just
+    // before it raises the flag, so the flag is waited for too.
+    CHECK(WaitUntil([&] { return session.ConsumeParamsChanged(); }));
+    CHECK_FALSE(session.HasTrackRequest());
+
+    REQUIRE(utau.Send(bridge::BuildRequestLine(
+        "c-2", kind::kUpdatePartLayout,
+        R"({"parts":[)" + IdLayoutOf(0, "tb", bHash) + "," + IdLayoutOf(1, "ta", aHash) +
+            R"(]})")));
+    REQUIRE(utau.ReadControl().kind == ControlKind::Response);
+    Block after(2);
+    REQUIRE(RenderUntil(session, 0, &after,
+                        [](const Block &out) { return out.left[0] == -0.25f; }));
+    CHECK(session.SavedBinding().trackId == "tb");
+
+    // Deleting "tb" silences the instance instead of handing it the neighbour.
+    REQUIRE(utau.Send(bridge::BuildNotificationLine(
+        kind::kUpdateTracks, R"({"tracks":[{"id":"ta","name":"A"}]})")));
+    REQUIRE(WaitUntil([&] { return session.UiCopy().unbound; }));
+    CHECK(session.UiCopy().trackNo == -1);
+    CHECK(session.SavedBinding().trackId == "tb");
+
+    session.Stop();
+}
+
+TEST_CASE("The binding is reported after init and follows bindTrack") {
+    TempDir dir;
+    Session session(dir.path);
+    session.SetHostTrackName("Vocals");
+    REQUIRE(session.Start());
+    FakeOpenUtau utau;
+    REQUIRE(utau.Connect(session.Port()));
+
+    REQUIRE(utau.Send(bridge::BuildRequestLine("i-1", kind::kInit, R"({"ustx":"name: x"})")));
+    REQUIRE(utau.ReadControl().kind == ControlKind::Response);
+    ControlLine first = NextNotification(utau, kind::kBindingChanged);
+    REQUIRE(first.kind == ControlKind::Notification);
+    CHECK(first.payload.find(R"("trackId":null)") != std::string::npos);
+    CHECK(first.payload.find(R"("hostTrackName":"Vocals")") != std::string::npos);
+
+    // The first list with ids: the instance's position 1 adopts "ta".
+    REQUIRE(utau.Send(bridge::BuildNotificationLine(
+        kind::kUpdateTracks, R"({"tracks":[{"id":"ta","name":"A"},{"id":"tb","name":"B"}]})")));
+    ControlLine adopted = NextNotification(utau, kind::kBindingChanged);
+    CHECK(adopted.payload.find(R"("trackId":"ta")") != std::string::npos);
+    CHECK(session.ConsumeStateDirty());
+
+    REQUIRE(utau.Send(bridge::BuildRequestLine("b-1", kind::kBindTrack, R"({"trackId":"tb"})")));
+    ControlLine ok = utau.ReadControl();
+    REQUIRE(ok.kind == ControlKind::Response);
+    CHECK(ok.payload.find(R"("success":true)") != std::string::npos);
+    ControlLine rebound = NextNotification(utau, kind::kBindingChanged);
+    CHECK(rebound.payload.find(R"("trackId":"tb")") != std::string::npos);
+    CHECK(session.TrackNo() == 1);
+    CHECK(session.ConsumeStateDirty());
+    CHECK(session.ConsumeParamsChanged());
+
+    REQUIRE(utau.Send(bridge::BuildRequestLine("b-2", kind::kBindTrack, R"({"trackId":"tz"})")));
+    ControlLine refused = utau.ReadControl();
+    REQUIRE(refused.kind == ControlKind::Response);
+    CHECK(refused.payload.find(R"("success":false)") != std::string::npos);
+    CHECK(session.SavedBinding().trackId == "tb");
+
+    session.Stop();
+}
+
+TEST_CASE("A restored binding is what the host holds; only a migration asks it to save") {
+    TempDir dir;
+    Session session(dir.path);
+    REQUIRE(session.Start());
+    FakeOpenUtau utau;
+    REQUIRE(utau.Connect(session.Port()));
+    const char *tracks = R"({"tracks":[{"id":"ta","name":"A"},{"id":"tb","name":"B"}]})";
+
+    SUBCASE("A 1.1 state adopts the id at its position and marks the session dirty") {
+        bridge::Binding legacy;
+        legacy.trackNo = 1;
+        session.RestoreBinding(legacy);
+        REQUIRE(utau.Send(bridge::BuildNotificationLine(kind::kUpdateTracks, tracks)));
+        REQUIRE(WaitUntil([&] { return session.SavedBinding().trackId == "tb"; }));
+        CHECK(WaitUntil([&] { return session.ConsumeStateDirty(); }));
+    }
+    SUBCASE("A state with an id is not a change") {
+        bridge::Binding saved;
+        saved.trackId = "tb";
+        saved.trackNo = 1;
+        session.RestoreBinding(saved);
+        REQUIRE(utau.Send(bridge::BuildNotificationLine(kind::kUpdateTracks, tracks)));
+        REQUIRE(WaitUntil([&] { return session.UiCopy().tracks.size() == 2; }));
+        std::this_thread::sleep_for(std::chrono::milliseconds(3 * Session::kPollMs));
+        CHECK(session.SavedBinding().trackId == "tb");
+        CHECK_FALSE(session.ConsumeStateDirty());
+    }
+    SUBCASE("A pick the worker has not taken yet is what gets saved") {
+        session.SetTrackNo(1);
+        bridge::Binding saved = session.SavedBinding();
+        CHECK(saved.trackNo == 1);
+        CHECK(saved.trackId.empty());
+    }
+    SUBCASE("A position past the end is not reported as a lost track") {
+        session.SetTrackNo(5);
+        REQUIRE(utau.Send(bridge::BuildNotificationLine(kind::kUpdateTracks, tracks)));
+        REQUIRE(WaitUntil([&] { return session.UiCopy().tracks.size() == 2; }));
+        std::this_thread::sleep_for(std::chrono::milliseconds(3 * Session::kPollMs));
+        CHECK_FALSE(session.UiCopy().unbound);
+        CHECK(session.SavedBinding().trackId.empty());
+    }
+
+    session.Stop();
 }

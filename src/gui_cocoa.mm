@@ -201,7 +201,9 @@ static std::string TrackLabel(const bridge::TrackInfo &track, size_t index) {
         _engine.stringValue = [NSString stringWithFormat:@"Engine: %@", engine];
         _engine.textColor = NSColor.labelColor;
     } else {
-        _singer.stringValue = @"No tracks reported yet.";
+        _singer.stringValue = current.unbound
+            ? @"Its OpenUtau track is gone; silent until it returns."
+            : @"No tracks reported yet.";
         _singer.textColor = NSColor.secondaryLabelColor;
         _engine.stringValue = @"No tracks reported yet.";
         _engine.textColor = NSColor.secondaryLabelColor;

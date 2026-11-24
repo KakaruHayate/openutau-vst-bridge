@@ -175,7 +175,9 @@ struct WindowState {
             rows.push_back({"Engine: " + (track.engine.empty() ? "(none)" : track.engine),
                             strong, 12});
         } else {
-            rows.push_back({"No tracks reported yet.", weak, 12});
+            rows.push_back({shown.unbound ? "Its OpenUtau track is gone; silent until it returns."
+                                          : "No tracks reported yet.",
+                            weak, 12});
             rows.push_back({"", weak, 12});
         }
         return rows;

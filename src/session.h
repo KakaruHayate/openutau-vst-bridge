@@ -17,6 +17,7 @@
  */
 
 #include "audio_store.h"
+#include "binding.h"
 #include "connection.h"
 #include "discovery.h"
 #include "socket.h"
@@ -26,6 +27,7 @@
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -51,6 +53,9 @@ struct UiState {
     /// picker renders "N: name - singer / engine" out of these.
     std::vector<TrackInfo> tracks;
     int trackNo = 0;
+    /// v1.3: bound to a track id the project does not have (deleted, or another project is
+    /// open). The instance is silent until the track comes back, and `trackNo` is -1.
+    bool unbound = false;
     bool hasTempo = false;
     double tempo = 0.0;
     bool playing = false;
@@ -102,10 +107,18 @@ public:
     /// every one of them and the worker re-pulls what the layout still names.
     void SetHostSampleRate(double rate) { hostRate_.store(rate); }
 
-    /// Which OpenUtau track this instance routes. OpenUtau's volume/pan/mute fields remain on the
-    /// wire for compatibility, but the bridge emits pre-fader audio and the DAW owns those controls.
-    void SetTrackNo(int trackNo) { trackNo_.store(trackNo); }
-    /// The track this instance is routing now, which the timeline was last built from.
+    /// Binds this instance to the track at this position, from the host's parameter. With an
+    /// OpenUtau that identifies tracks (v1.3) the binding then takes that track's id and follows
+    /// it wherever it moves; with an older one the position is the binding. OpenUtau's
+    /// volume/pan/mute fields remain on the wire for compatibility, but the bridge emits
+    /// pre-fader audio and the DAW owns those controls.
+    void SetTrackNo(int trackNo) {
+        int clamped = std::clamp(trackNo, 0, kMaxTrackNo);
+        trackNo_.store(clamped);
+        pick_.store(clamped);
+    }
+    /// The bound track's position as last known, which is the parameter's value. While the
+    /// instance is unbound it keeps the last position the track had.
     int TrackNo() const { return trackNo_.load(); }
 
     /// Main thread, from the track picker. Changes the routing immediately - the audio follows
@@ -113,9 +126,39 @@ public:
     /// to the host as a parameter change (CLAP: gesture + value + gesture on the output queue).
     /// The pending flag is what keeps a host-side automation and a GUI click from echoing.
     void RequestTrackNo(int trackNo) {
-        trackNo_.store(std::clamp(trackNo, 0, kMaxTrackNo));
+        SetTrackNo(trackNo);
         trackRequestPending_.store(true);
     }
+
+    /// Main thread, from the host's state. Replaces the binding wholesale; a binding without an
+    /// id (saved before v1.3) takes the id of the track at its position once OpenUtau sends ids.
+    void RestoreBinding(const Binding &binding);
+
+    /// Main thread, for the host's state: the binding as it stands, including a pick or a
+    /// restore the worker has not processed yet.
+    Binding SavedBinding() const;
+
+    /// Main thread. The DAW's name for the track this instance sits on (CLAP track-info), which
+    /// `bindingChanged` reports to OpenUtau. Empty when the host does not say.
+    void SetHostTrackName(const std::string &name);
+
+    /// Called before Start(). The worker calls it, from its own thread, when the host has
+    /// something to collect on the main thread: see ConsumeParamsChanged and ConsumeStateDirty.
+    /// It has to be safe to call from any thread (CLAP's request_callback is).
+    void SetHostNotifier(std::function<void()> notify) { notifyHost_ = std::move(notify); }
+
+    /// Main thread. True once after the bound track's position changed without the host or the
+    /// window having picked it - a reorder in OpenUtau, a `bindTrack` - so the host re-reads the
+    /// parameter's value instead of being told the user moved it.
+    bool ConsumeParamsChanged() { return paramsChanged_.exchange(false); }
+
+    /// Main thread. True once after the bound id changed (a migration, a pick, `bindTrack`), so
+    /// the host knows its session has something new to save.
+    bool ConsumeStateDirty() { return stateDirty_.exchange(false); }
+
+    /// Main thread, for the parameter's text. The name of the track at this position, empty when
+    /// none is known.
+    std::string TrackNameAt(int trackNo) const;
 
     /// Main thread, from the plugin's process/flush path. True exactly once per GUI change;
     /// the plugin answers it by notifying the host for the parameter identified below.
@@ -199,6 +242,13 @@ private:
     /// Sends what the audio thread and the host latched: a rate change's re-pull, a track change,
     /// and a playback start nobody has heard about yet.
     void PumpInputs();
+    /// Matches the binding against the current track list, and tells the host and the timeline
+    /// when that moved anything. `previousId` is the id the host last knew, which a caller that
+    /// already replaced the binding has to pass in.
+    void Rebind(std::string previousId);
+    /// Sends `bindingChanged` (v1.3) after init and whenever the binding or the host's track
+    /// name changed since the last one this connection heard.
+    void PumpBinding();
     /// Reports the playhead: state changes immediately, movement at the throttle's pace, scrubs
     /// past a threshold. Parked and still is not news.
     void PumpPlayhead();
@@ -228,6 +278,8 @@ private:
     void OnProjectInfo(const ProjectInfo &info) override;
     /// Audio for one hash, converted to the host's rate as it arrives.
     void OnAudio(const std::string &hash, std::vector<uint8_t> &&pcm) override;
+    /// Binds to a track OpenUtau names by id. Refused for an id the track list does not have.
+    bool OnBindTrack(const std::string &trackId, std::string *error) override;
 
     Listener listener_;
     Discovery discovery_;
@@ -245,13 +297,34 @@ private:
     /// The USTX baseline. Nothing renders from it — the audio arrives ready — but it is what a
     /// host session has to carry to reopen the project it was mixed against.
     std::string ustx_;
-    int builtTrack_ = -1;
+    /// The binding, and the position it resolved to (-1: bound to a track the list lacks).
+    Binding binding_;
+    int route_ = 0;
+    /// The DAW's track name as the worker last took it from the main thread.
+    std::string hostTrackName_;
+    /// What this connection last heard in `bindingChanged`; nothing until the first one.
+    bool bindingSent_ = false;
+    std::string sentTrackId_;
+    std::string sentHostTrackName_;
     bool dirty_ = false;
 
     // --- crossing threads ---
     TimelineBox timeline_;
     std::atomic<double> hostRate_{0.0};
     std::atomic<int> trackNo_{0};
+    /// A pick by position (host parameter, window) the worker has not bound yet; -1 for none.
+    std::atomic<int> pick_{-1};
+    std::atomic<bool> unbound_{false};
+    std::atomic<bool> paramsChanged_{false};
+    std::atomic<bool> stateDirty_{false};
+    std::function<void()> notifyHost_;
+    /// Main thread to worker: a restored binding and the host's track name. Worker to main
+    /// thread: the binding as last resolved, for the host's state.
+    mutable std::mutex bindingMutex_;
+    bool restorePending_ = false;
+    Binding restored_;
+    Binding savedBinding_;
+    std::string hostTrackNameIn_;
     /// Set by the track picker, consumed by the plugin's process/flush path so the change is
     /// reported to the host as a parameter movement rather than silently applied.
     std::atomic<bool> trackRequestPending_{false};
