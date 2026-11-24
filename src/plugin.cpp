@@ -78,9 +78,10 @@ struct Bridge {
     /// Set when the host picked a track while a GUI report was mid-flight: the staged
     /// value is stale, and only the matching gesture-end still owes the sequence.
     bool trackNotifyCancel_ = false;
-    /// The parameter value the host last sent or was told, -1 before either. A pick is a value
-    /// that differs from this, not from the live position: after a reorder moves the bound
-    /// track, an automation lane still holding the old number must not rebind the instance.
+    /// The parameter value the host last sent, or was told by a report of the window's pick;
+    /// -1 before either. A pick is a value that differs from this, not from the live position:
+    /// after a reorder moves the bound track (which the host only re-reads through a rescan), an
+    /// automation lane that re-asserts its old number must not rebind the instance.
     std::atomic<int> lastHostValue_{-1};
     /// Raised on the main thread when a reorder or bindTrack moved the value under a report
     /// still in flight; the report path drops the stale value at its next visit.
@@ -415,6 +416,9 @@ bool StateLoad(const clap_plugin_t *plugin, const clap_istream_t *stream) {
         return false;
     }
     Bridge *self = Bridge::Of(plugin);
+    // The restored binding supersedes a pick the window was still reporting.
+    self->session.ClearTrackRequest();
+    self->dropStaleReport_.store(true);
     self->session.RestoreBinding(binding);
     // What the host holds for the parameter is this position, so replaying it is not a pick.
     self->lastHostValue_.store(std::clamp(binding.trackNo, 0, bridge::kMaxTrackNo));
@@ -609,9 +613,9 @@ const void *PluginGetExtension(const clap_plugin_t *plugin, const char *id) {
 void PluginOnMainThread(const clap_plugin_t *plugin) {
     Bridge *self = Bridge::Of(plugin);
     if (self->session.ConsumeParamsChanged()) {
-        // The host re-reads the value, so that is what it holds now; a report still in flight
-        // carries the value from before the move and must not overwrite it.
-        self->lastHostValue_.store(self->session.TrackNo());
+        // A report still in flight carries the value from before the move and must not
+        // overwrite it. lastHostValue_ stays as it is: a rescan is not the host sending a value,
+        // and an automation lane may re-assert the number it held before the move.
         self->dropStaleReport_.store(true);
         if (self->hostParams != nullptr) {
             self->hostParams->rescan(self->host,

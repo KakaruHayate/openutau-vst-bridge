@@ -708,6 +708,9 @@ TEST_CASE("An instance bound by id keeps its voice when OpenUtau reorders tracks
         kind::kUpdateTracks, R"({"tracks":[{"id":"ta","name":"A"}]})")));
     REQUIRE(WaitUntil([&] { return session.UiCopy().unbound; }));
     CHECK(session.UiCopy().trackNo == -1);
+    // The position did not move, but the parameter's text did (no name while unbound).
+    CHECK(WaitUntil([&] { return session.ConsumeParamsChanged(); }));
+    CHECK(session.TrackNameAt(session.TrackNo()).empty());
     CHECK(session.SavedBinding().trackId == "tb");
 
     session.Stop();

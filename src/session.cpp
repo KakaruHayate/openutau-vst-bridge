@@ -168,6 +168,7 @@ void Session::Republish() {
 
 void Session::Rebind(std::string previousId) {
     const int previousTrackNo = trackNo_.load();
+    const bool wasUnbound = unbound_.load();
     Resolution resolved = Resolve(&binding_, tracks_);
     route_ = resolved.trackNo;
     // A pick the worker has not taken yet already set the value the host and window show; it
@@ -188,7 +189,8 @@ void Session::Rebind(std::string previousId) {
         stateDirty_.store(true);
         notify = true;
     }
-    if (binding_.trackNo != previousTrackNo) {
+    // The parameter's text follows the binding too: an unbound instance shows no track name.
+    if (binding_.trackNo != previousTrackNo || unbound_.load() != wasUnbound) {
         paramsChanged_.store(true);
         notify = true;
     }
@@ -307,15 +309,16 @@ void Session::OnTracks(const std::vector<TrackInfo> &tracks) {
         std::lock_guard<std::mutex> lock(uiMutex_);
         uiTracks_ = tracks;
     }
+    // A reorder moves the bound track, a deletion unbinds it, and the first list with ids is
+    // what a binding saved before v1.3 adopts its id from. The host hears about new names only
+    // after that, so a rescan never reads a text from before the binding was resolved.
+    Rebind(binding_.trackId);
     if (namesChanged) {
         paramsChanged_.store(true);
         if (notifyHost_) {
             notifyHost_();
         }
     }
-    // A reorder moves the bound track, a deletion unbinds it, and the first list with ids is
-    // what a binding saved before v1.3 adopts its id from.
-    Rebind(binding_.trackId);
 }
 
 void Session::OnProjectInfo(const ProjectInfo &info) {

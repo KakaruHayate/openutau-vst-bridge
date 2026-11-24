@@ -182,7 +182,7 @@ audio <hash> <length>\n
 
 - Binds the instance to the track with this `id`, exactly as if it had been picked in the plugin (§6.4). Sent only to plugins that answered `init` with a minor of 3 or more.
 - Response: an empty success. A plugin refuses an id its last `updateTracks` did not carry (failed envelope with a reason); the binding is then unchanged. That includes the moment between `init` and the first `updateTracks`. There is no unbind.
-- The plugin then reports the new binding with `bindingChanged`, like any other change.
+- The plugin then reports the new binding with `bindingChanged`, like any other change; binding the id it already has changes nothing and sends nothing.
 
 ### 6.2 Plugin → OpenUtau
 
@@ -250,7 +250,7 @@ audio 13507256038857166760 3528000\n<3528000 raw bytes>
 Up to 1.2 an instance names its track by position (`trackNo`), so inserting, deleting or reordering tracks in OpenUtau moves DAW tracks onto other voices. From 1.3 an instance binds to a track's `id`:
 
 - **Resolution.** On every `updateTracks` the instance looks its id up and plays the parts whose `trackId` matches. When the id is missing (the track was deleted, or another project is open) the instance is **silent** and **keeps the id**, so undoing the deletion brings the voice back. It never falls back to a position or a name at run time — both are reused by unrelated tracks (new tracks are named `Track1`, `Track2`, … in every project).
-- **Picking by position.** A pick in the plugin's window or through its host parameter names a position; the instance binds to the id of the track at that position, then follows it. Only a value that differs from the one the host last sent or was told is a pick, so automation that still holds a number from before a reorder does not rebind; a lane that moves to a new number does, by position. When a reorder moves the bound track, the instance updates its parameter and tells the host to re-read it (CLAP `params.rescan`), rather than reporting a user's movement.
+- **Picking by position.** A pick in the plugin's window or through its host parameter names a position; the instance binds to the id of the track at that position, then follows it. Only a value that differs from the one the host last sent (or was told by a report of the window's pick) is a pick. A reorder moves the parameter without the host sending anything, so a lane that still holds, or re-asserts, its number from before the reorder does not rebind; a lane that moves to a new number does, by position. When a reorder moves the bound track, the instance updates its parameter and tells the host to re-read it (CLAP `params.rescan`), rather than reporting a user's movement.
 - **Migration.** State saved before 1.3 holds only a position. The first `updateTracks` with ids gives it the id at that position, and the instance asks the host to save (CLAP `state.mark_dirty`). An OpenUtau project saved before ids existed gets them when it is opened, and OpenUtau counts them as unsaved changes once a plugin has seen them: unless the project is saved, the next open makes new ids and the instances go silent until picked again.
 - **Older peers.** Against an OpenUtau that sends no ids, the position is the binding, as in 1.2. The reference bridge's saved state keeps 1.1's layout and appends the id, so an older build of the plugin still loads it.
 
