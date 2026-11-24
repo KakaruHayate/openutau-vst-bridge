@@ -580,8 +580,12 @@ void EventLoop(SharedDisplay *shared) {
                             // asked for destroy(). The host still has to hear about it, so
                             // the report runs with the other callbacks, outside the lock and
                             // behind the same gate as a track pick.
+                            // Read before hiding: HideWindowLocked marks an embedded window
+                            // floating, and a close queued while floating may be handled after
+                            // the host embedded the window again.
+                            const bool wasFloating = state->floating;
                             HideWindowLocked(*shared, state);
-                            if (state->floating && state->onUserClosed) {
+                            if (wasFloating && state->onUserClosed) {
                                 pendingCallbacks.push_back(
                                     [onUserClosed = state->onUserClosed, gate = state->callbackGate] {
                                         std::lock_guard<std::mutex> gateLock(gate->mutex);
