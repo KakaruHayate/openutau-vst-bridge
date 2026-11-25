@@ -1088,6 +1088,10 @@ void InfoWindow::EmbedInto(void *parent) {
     if (state == nullptr || !state->alive() || parent == nullptr) {
         return;
     }
+    // Same lock as Hide() and the close box: an embed must not land between the
+    // event thread's floating check and its hide, or the new embed would be hidden.
+    x11gui::SharedDisplay &shared = x11gui::GetSharedDisplay();
+    std::lock_guard<std::mutex> lock(shared.mutex);
     auto host = static_cast<Window>(reinterpret_cast<uintptr_t>(parent));
     state->parent = host;
     state->owner = 0;
