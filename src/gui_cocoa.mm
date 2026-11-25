@@ -267,8 +267,10 @@ namespace cocoagui {
 struct WindowState {
     Session *session = nullptr;
     std::function<void()> onTrackPicked;
+    std::function<void()> onUserClosed;
     OpenUtauBridgePanel *panel = nil;
     NSWindow *floating = nil;
+    id closeObserver = nil;  // NSWindowWillCloseNotification on `floating`: the user's close box.
     bool floatingMode = true;
 };
 
@@ -417,7 +419,8 @@ void GuiUnregister(const clap_plugin_t *plugin) {
     cocoagui::Registry().erase(plugin);
 }
 
-InfoWindow *CreateInfoWindow(Session *session, std::function<void()> onTrackPicked) {
+InfoWindow *CreateInfoWindow(Session *session, std::function<void()> onTrackPicked,
+                             std::function<void()> onUserClosed) {
     using cocoagui::WindowState;
     // Hosts that show plugin editors already run AppKit, but make sure the shared
     // application exists so control creation can never return nil for lack of one.
@@ -426,6 +429,7 @@ InfoWindow *CreateInfoWindow(Session *session, std::function<void()> onTrackPick
     auto *state = new WindowState();
     state->session = session;
     state->onTrackPicked = std::move(onTrackPicked);
+    state->onUserClosed = std::move(onUserClosed);
     state->panel = [[OpenUtauBridgePanel alloc] initWithSession:session
                                                   onTrackPicked:state->onTrackPicked];
     if (state->panel == nil) {
@@ -443,6 +447,18 @@ InfoWindow *CreateInfoWindow(Session *session, std::function<void()> onTrackPick
     state->floating.releasedWhenClosed = NO;
     state->floating.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     state->floating.contentView = state->panel;
+    // The close box is the only thing that closes this window: hide() and destroy() order it
+    // out, which posts no close notification. AppKit posts it on the main thread.
+    std::function<void()> userClosed = state->onUserClosed;
+    state->closeObserver = [[NSNotificationCenter defaultCenter]
+        addObserverForName:NSWindowWillCloseNotification
+                    object:state->floating
+                     queue:nil
+                usingBlock:^(NSNotification *) {
+                  if (userClosed) {
+                      userClosed();
+                  }
+                }];
 
     auto *window = new InfoWindow();
     window->impl_ = state;
@@ -455,6 +471,10 @@ InfoWindow::~InfoWindow() {
         return;
     }
     [state->panel stopTimer];
+    if (state->closeObserver != nil) {
+        [[NSNotificationCenter defaultCenter] removeObserver:state->closeObserver];
+        state->closeObserver = nil;
+    }
     [state->panel removeFromSuperview];  // Detaches from host or wrapper, then ARC frees.
     [state->floating orderOut:nil];
     state->floating = nil;

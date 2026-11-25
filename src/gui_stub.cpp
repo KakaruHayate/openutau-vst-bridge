@@ -22,7 +22,9 @@ void InfoWindow::OwnTo(void *) {}
 void InfoWindow::Retitle(const char *) {}
 bool InfoWindow::SetContentScale(float) { return false; }
 
-InfoWindow *CreateInfoWindow(Session *, std::function<void()>) { return nullptr; }
+InfoWindow *CreateInfoWindow(Session *, std::function<void()>, std::function<void()>) {
+    return nullptr;
+}
 
 void GuiRegister(const clap_plugin_t *, InfoWindow *) {}
 void GuiUnregister(const clap_plugin_t *) {}

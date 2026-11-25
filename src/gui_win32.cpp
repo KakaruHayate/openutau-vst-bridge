@@ -90,6 +90,7 @@ struct Row {
 struct WindowState {
     Session *session = nullptr;
     std::function<void()> onTrackPicked;
+    std::function<void()> onUserClosed;
     HWND hwnd = nullptr;
     HWND combo = nullptr;
     bool floating = true;
@@ -488,8 +489,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) 
             return 0;
         case WM_CLOSE:
             // A floating window closed by its user hides rather than destroys: the host owns
-            // the gui's lifetime, and it was not asked for destroy().
+            // the gui's lifetime, and it was not asked for destroy(). The host still has to
+            // hear about it, or its "show editor" toggle stays on for a hidden window.
             ShowWindow(hwnd, SW_HIDE);
+            if (state != nullptr && state->floating && state->onUserClosed) {
+                state->onUserClosed();
+            }
             return 0;
         default:
             return DefWindowProcW(hwnd, message, wparam, lparam);
@@ -667,7 +672,8 @@ void GuiUnregister(const clap_plugin_t *plugin) {
     Registry().erase(plugin);
 }
 
-InfoWindow *CreateInfoWindow(Session *session, std::function<void()> onTrackPicked) {
+InfoWindow *CreateInfoWindow(Session *session, std::function<void()> onTrackPicked,
+                             std::function<void()> onUserClosed) {
     using guiwin::WindowState;
     if (!guiwin::EnsureWindowClass()) {
         return nullptr;
@@ -676,6 +682,7 @@ InfoWindow *CreateInfoWindow(Session *session, std::function<void()> onTrackPick
     auto *state = new WindowState();
     state->session = session;
     state->onTrackPicked = std::move(onTrackPicked);
+    state->onUserClosed = std::move(onUserClosed);
     state->shown = session->UiCopy();
     if (!guiwin::CreateNative(state)) {
         delete state;

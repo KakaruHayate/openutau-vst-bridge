@@ -43,14 +43,19 @@ public:
 private:
     InfoWindow() = default;
     void *impl_ = nullptr;
-    friend InfoWindow *CreateInfoWindow(Session *session, std::function<void()> onTrackPicked);
+    friend InfoWindow *CreateInfoWindow(Session *session, std::function<void()> onTrackPicked,
+                                        std::function<void()> onUserClosed);
 };
 
 /// gui_win32.cpp, gui_cocoa.mm, or gui_stub.cpp. Null when the backend could not be
 /// created — the plugin then advertises no gui, which is a degraded but working plugin.
 /// `onTrackPicked` runs on the main thread after the user chooses a track; the plugin
-/// uses it to nudge the host.
-InfoWindow *CreateInfoWindow(Session *session, std::function<void()> onTrackPicked = {});
+/// uses it to nudge the host. `onUserClosed` runs when the user closes the floating window
+/// with its own close control — never for the host's own hide() or destroy() — so the
+/// plugin can report clap_host_gui::closed(), which CLAP marks thread-safe; it may run on
+/// any thread (X11 runs it on the event thread).
+InfoWindow *CreateInfoWindow(Session *session, std::function<void()> onTrackPicked = {},
+                             std::function<void()> onUserClosed = {});
 
 /// The gui extension's callbacks receive the clap_plugin_t, not the window, so each
 /// instance registers itself here around plugin init/destroy. Main thread.

@@ -14,8 +14,9 @@
  * repaints, so a small event thread of our own drains our own display connection —
  * Xlib is serialized behind XInitThreads, UiCopy/RequestTrackNo are thread-safe, and
  * the tick repaints at 4 Hz exactly like the Win32 timer does. The one cost: the
- * onTrackPicked nudge (host request_flush) fires from that thread rather than the
- * host's main thread. Every X11 host that embeds plugins already tolerates a flush
+ * onTrackPicked nudge (host request_flush) and the onUserClosed report (host gui
+ * closed(), thread-safe in CLAP) fire from that thread rather than the host's main
+ * thread. Every X11 host that embeds plugins already tolerates a flush
  * request from a plugin's own event source; a strictly main-thread host would simply
  * see the parameter change on its next flush regardless.
  *
@@ -101,6 +102,7 @@ struct WindowState {
 
     Session *session = nullptr;
     std::function<void()> onTrackPicked;
+    std::function<void()> onUserClosed;
     std::shared_ptr<CallbackGate> callbackGate = std::make_shared<CallbackGate>();
     Display *display = nullptr;
     int screen = 0;
@@ -575,8 +577,23 @@ void EventLoop(SharedDisplay *shared) {
                             static_cast<Atom>(event.xclient.data.l[0]) == state->deleteAtom) {
                             // A floating window closed by its user hides rather than
                             // destroys: the host owns the gui's lifetime, and it was not
-                            // asked for destroy().
+                            // asked for destroy(). The host still has to hear about it, so
+                            // the report runs with the other callbacks, outside the lock and
+                            // behind the same gate as a track pick.
+                            // Read before hiding: HideWindowLocked marks an embedded window
+                            // floating, and a close queued while floating may be handled after
+                            // the host embedded the window again.
+                            const bool wasFloating = state->floating;
                             HideWindowLocked(*shared, state);
+                            if (wasFloating && state->onUserClosed) {
+                                pendingCallbacks.push_back(
+                                    [onUserClosed = state->onUserClosed, gate = state->callbackGate] {
+                                        std::lock_guard<std::mutex> gateLock(gate->mutex);
+                                        if (gate->alive) {
+                                            onUserClosed();
+                                        }
+                                    });
+                            }
                         }
                         break;
                     default:
@@ -961,7 +978,8 @@ void GuiUnregister(const clap_plugin_t *plugin) {
     Registry().erase(plugin);
 }
 
-InfoWindow *CreateInfoWindow(Session *session, std::function<void()> onTrackPicked) {
+InfoWindow *CreateInfoWindow(Session *session, std::function<void()> onTrackPicked,
+                             std::function<void()> onUserClosed) {
     using x11gui::WindowState;
     // Our event thread touches the same display connection the main thread uses; Xlib
     // must be told once, before any display opens, that this is going to happen.
@@ -970,6 +988,7 @@ InfoWindow *CreateInfoWindow(Session *session, std::function<void()> onTrackPick
     auto *state = new WindowState();
     state->session = session;
     state->onTrackPicked = std::move(onTrackPicked);
+    state->onUserClosed = std::move(onUserClosed);
     state->shown = session->UiCopy();
     auto *window = new InfoWindow();
     window->impl_ = state;
@@ -1069,6 +1088,10 @@ void InfoWindow::EmbedInto(void *parent) {
     if (state == nullptr || !state->alive() || parent == nullptr) {
         return;
     }
+    // Same lock as Hide() and the close box: an embed must not land between the
+    // event thread's floating check and its hide, or the new embed would be hidden.
+    x11gui::SharedDisplay &shared = x11gui::GetSharedDisplay();
+    std::lock_guard<std::mutex> lock(shared.mutex);
     auto host = static_cast<Window>(reinterpret_cast<uintptr_t>(parent));
     state->parent = host;
     state->owner = 0;
