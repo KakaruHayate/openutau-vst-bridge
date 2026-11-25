@@ -1,6 +1,29 @@
 # OpenUtau Bridge Release Notes
 
-**Version 1.1.0 · Protocol v1.2 · 2026-11-17**
+**Version 1.1.1 · Protocol v1.2 · 2026-11-25**
+
+1.1.1 is a host-integration fix for the floating editor (PR #19, by tcpassos). Closing the
+editor with its own close box hid the window but never told the host, so a DAW that tracks
+whether the editor is open kept its toggle on. It then took two clicks to bring the window
+back: the first turned the stale toggle off.
+
+The plugin now reports `clap_host_gui::closed(host, true)`. The host acknowledges it with
+`clap_plugin_gui::destroy()`, which in this bridge only hides the window and keeps it
+reusable, so the next `create()` / `show()` brings the same editor back.
+
+- **The report is only for the user's close.** The Win32 `WM_CLOSE`, the Cocoa
+  `NSWindowWillCloseNotification` and the X11 `WM_DELETE_WINDOW` paths send it; a host's own
+  `hide()` or `destroy()` does not.
+- **The close cannot race an embed on X11.** Reparenting now takes the same lock as the close
+  path, so a queued close cannot hide an editor the host has just embedded.
+
+The wire format is unchanged (protocol v1.2), so 1.1.1 pairs with every OpenUtau build that
+speaks v1.1 or later. The macOS and Linux bundles are still unsigned; the re-signing and
+Flatpak notes in `README.md` apply to this release as they did to 1.1.0.
+
+---
+
+## 1.1.0 · 2026-11-17
 
 1.1.0 gives Linux the plugin window Windows and macOS already had (PR #15, by linux-leo),
 and the work that mattered turned out to be the crash the window brought with it.
